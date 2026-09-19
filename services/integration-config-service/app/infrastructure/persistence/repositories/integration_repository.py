@@ -40,10 +40,13 @@ class IntegrationCredentialRepository:
         auth_scheme: str,
         extra_config: Optional[dict] = None,
     ) -> IntegrationCredential:
-        credential = self.get(provider, account_key)
+        credential = self.db.query(IntegrationCredential).first()
         if credential is None:
             credential = IntegrationCredential(provider=provider, account_key=account_key)
             self.db.add(credential)
+        else:
+            credential.provider = provider
+            credential.account_key = account_key
 
         credential.username = username
         credential.access_key = access_key
