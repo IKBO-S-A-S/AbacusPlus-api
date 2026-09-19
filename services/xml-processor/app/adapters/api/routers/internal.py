@@ -122,6 +122,18 @@ def _migrate_tenant_db(engine) -> None:
                 "REFERENCES integration_cost_centers(id)"
             )
         )
+        conn.execute(
+            text(
+                "ALTER TABLE documents "
+                "ADD COLUMN IF NOT EXISTS pdf_storage_locations JSONB NOT NULL DEFAULT '{}'"
+            )
+        )
+        conn.execute(
+            text(
+                "ALTER TABLE documents "
+                "ADD COLUMN IF NOT EXISTS xml_storage_locations JSONB NOT NULL DEFAULT '{}'"
+            )
+        )
         conn.commit()
 
 

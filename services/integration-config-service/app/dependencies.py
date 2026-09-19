@@ -14,6 +14,7 @@ from app.application.use_cases.manage_credentials import ManageCredentialsUseCas
 from app.application.use_cases.manage_purchase_invoice_parameters import (
     ManagePurchaseInvoiceParametersUseCase,
 )
+from app.application.use_cases.manage_storage_settings import ManageStorageSettingsUseCase
 from app.infrastructure.config.auth_dependency import get_tenant_db
 from app.infrastructure.persistence.repositories.chart_account_repository import (
     ChartAccountRepository,
@@ -28,6 +29,21 @@ from app.infrastructure.persistence.repositories.product_repository import Produ
 from app.infrastructure.persistence.repositories.purchase_invoice_parameter_repository import (
     PurchaseInvoiceParameterRepository,
 )
+from app.infrastructure.persistence.repositories.storage_repository import (
+    DocumentNamingSettingRepository,
+    S3StorageConfigRepository,
+    SharePointStorageConfigRepository,
+)
+
+
+def get_storage_settings_use_case(
+    db: Session = Depends(get_tenant_db),
+) -> ManageStorageSettingsUseCase:
+    return ManageStorageSettingsUseCase(
+        s3_repository=S3StorageConfigRepository(db),
+        sharepoint_repository=SharePointStorageConfigRepository(db),
+        naming_repository=DocumentNamingSettingRepository(db),
+    )
 
 
 def get_credentials_use_case(db: Session = Depends(get_tenant_db)) -> ManageCredentialsUseCase:

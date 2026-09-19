@@ -75,6 +75,18 @@ class DocumentRepository(DocumentRepositoryPort):
         self.db.refresh(row)
         return row
 
+    def update_storage_locations(
+        self, document_id: int, pdf_locations: dict, xml_locations: dict
+    ) -> Optional[Document]:
+        row = self.db.query(Document).filter(Document.id == document_id).first()
+        if row is None:
+            return None
+        row.pdf_storage_locations = pdf_locations
+        row.xml_storage_locations = xml_locations
+        self.db.commit()
+        self.db.refresh(row)
+        return row
+
     def find_most_frequent_cost_center(
         self, issuer_nit: str, description: str
     ) -> Optional[int]:

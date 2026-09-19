@@ -198,8 +198,13 @@ class HttpxExternalClient(ExternalClientPort):
                 )
 
                 # Paso 4: petición como form-encoded (el portal rechaza JSON en estos endpoints).
-                # El token CSRF va como campo del body, no como header.
-                form_data = {k: str(v) for k, v in (body or {}).items()}
+                # El token CSRF va como campo del body, no como header. Los booleanos se
+                # serializan en minúscula porque el model binder de ASP.NET MVC espera
+                # "true"/"false" — Python str(bool) produce "True"/"False" y rompe el binding.
+                form_data = {
+                    k: (str(v).lower() if isinstance(v, bool) else str(v))
+                    for k, v in (body or {}).items()
+                }
                 form_data["__RequestVerificationToken"] = csrf_token
 
                 logger.info("[DIAN paso 4] %s %s", method, url)

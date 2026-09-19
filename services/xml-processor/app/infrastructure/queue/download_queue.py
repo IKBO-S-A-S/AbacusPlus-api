@@ -12,7 +12,10 @@ from typing import Optional
 import httpx
 
 from app.application.use_cases.process_xml import ProcessXmlUseCase
+from app.application.use_cases.resolve_storage_backends import resolve_storage
 from app.domain.exceptions.base import DuplicateEntityException
+from app.domain.ports.storage import DocumentStoragePort
+from app.infrastructure.clients.integration_config_client import IntegrationConfigClient
 from app.infrastructure.clients.rag_client import RagClient
 from app.infrastructure.config.database import SessionLocal
 from app.infrastructure.config.tenant_connection_manager import get_session_for_tenant
@@ -26,6 +29,7 @@ from app.infrastructure.persistence.repositories.processing_log_repository impor
 from app.infrastructure.persistence.repositories.receiver_repository import ReceiverRepository
 from app.infrastructure.persistence.repositories.tax_repository import TaxRepository
 from app.infrastructure.queue.job_progress_store import JobProgressStore
+from app.infrastructure.storage.local_storage_adapter import LocalStorageAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -69,35 +73,48 @@ def _sanitize_name(text: str) -> str:
     return text
 
 
-def _build_pdf_name(
-    document_date, document_type: str, document_number: str, issuer_name: str
-) -> str:
-    """
-    Construye el nombre del PDF con la nomenclatura:
-    IKB - DOCU - AAAAMMDD - V01 - {tipo_documento} {numero_documento} {tercero}
-    """
+class _SafeDict(dict):
+    def __missing__(self, key):
+        return ""
+
+
+def _build_filename(pattern: str, document_data: dict) -> str:
+    """Construye el nombre base (sin extension) a partir del patron configurable.
+    Mismo nombre base para PDF y XML — solo cambia la extension."""
     try:
-        date_str = document_date.strftime("%Y%m%d")
+        date_str = document_data.get("date").strftime("%Y%m%d")
     except Exception:
-        date_str = str(document_date).replace("-", "")[:8]
+        date_str = str(document_data.get("date") or "").replace("-", "")[:8]
 
-    doc_type = _sanitize_name(document_type or "")
-    doc_number = _sanitize_name(document_number or "")
-    issuer = _sanitize_name(issuer_name or "")
-    suffix = " ".join(part for part in [doc_type, doc_number, issuer] if part).strip()
-    return f"IKB - DOCU - {date_str} - V01 - {suffix}.pdf"
+    placeholders = _SafeDict(
+        nit_emisor=_sanitize_name(document_data.get("issuer_nit") or ""),
+        nombre_emisor=_sanitize_name(document_data.get("issuer_name") or ""),
+        nit_receptor=_sanitize_name(document_data.get("receiver_nit") or ""),
+        nombre_receptor=_sanitize_name(document_data.get("receiver_name") or ""),
+        tipo_documento=_sanitize_name(document_data.get("document_type") or ""),
+        numero_documento=_sanitize_name(document_data.get("document_number") or ""),
+        fecha_emision=date_str,
+        cufe=_sanitize_name(document_data.get("cufe") or ""),
+    )
+    try:
+        name = pattern.format_map(placeholders)
+    except Exception as e:
+        logger.warning("Patron de nombre invalido (%s), usando fallback: %s", pattern, e)
+        name = f"IKB - DOCU - {date_str} - V01 - {placeholders['tipo_documento']} {placeholders['numero_documento']} {placeholders['nombre_emisor']}"
+    return _sanitize_name(name) or f"documento-{placeholders['numero_documento'] or 'sin-numero'}"
 
 
-def _extract_files_to_processed(file_path: Path, processed_dir: Path, document_data: dict) -> None:
-    """
-    Descomprime el ZIP y:
-    - Deja el XML en processed/xml/{nombre_original}.xml
-    - Deja el PDF en processed/pdf/{nomenclatura_IKB}.pdf
-    """
-    pdf_dir = processed_dir / "pdf"
-    xml_dir = processed_dir / "xml"
-    pdf_dir.mkdir(exist_ok=True)
-    xml_dir.mkdir(exist_ok=True)
+async def _extract_files_to_processed(
+    file_path: Path,
+    backends: list[DocumentStoragePort],
+    naming_pattern: str,
+    document_data: dict,
+) -> dict:
+    """Descomprime el ZIP y guarda el XML y el PDF (mismo nombre base, distinta extension)
+    en cada backend resuelto (local, S3 y/o SharePoint). Retorna las ubicaciones resultantes
+    por tipo de archivo: {"pdf": {backend_label: location, ...}, "xml": {...}}."""
+    base_name = _build_filename(naming_pattern, document_data)
+    locations: dict = {"pdf": {}, "xml": {}}
 
     try:
         with zipfile.ZipFile(str(file_path)) as zf:
@@ -105,26 +122,31 @@ def _extract_files_to_processed(file_path: Path, processed_dir: Path, document_d
                 if member.startswith(("__MACOSX/", "._")):
                     continue
                 name_lower = member.lower()
-                member_name = PurePosixPath(member).name
 
                 if name_lower.endswith(".xml"):
-                    dest = xml_dir / member_name
-                    dest.write_bytes(zf.read(member))
-                    logger.info("XML extraído → %s", dest)
-
+                    kind, filename = "xml", f"{base_name}.xml"
                 elif name_lower.endswith(".pdf"):
-                    pdf_name = _build_pdf_name(
-                        document_data.get("date"),
-                        document_data.get("document_type", ""),
-                        document_data.get("document_number", ""),
-                        document_data.get("issuer_name", ""),
-                    )
-                    dest = pdf_dir / pdf_name
-                    dest.write_bytes(zf.read(member))
-                    logger.info("PDF extraído y renombrado → %s", dest)
+                    kind, filename = "pdf", f"{base_name}.pdf"
+                else:
+                    continue
+
+                content = zf.read(member)
+                for backend in backends:
+                    backend_name = type(backend).__name__
+                    # El adaptador local preserva la estructura processed/{pdf,xml}/ existente;
+                    # los adaptadores en la nube guardan el archivo plano bajo su prefijo/carpeta.
+                    save_name = f"{kind}/{filename}" if isinstance(backend, LocalStorageAdapter) else filename
+                    try:
+                        location = await backend.save(content, save_name)
+                        locations[kind][backend_name] = location
+                        logger.info("%s guardado (%s) → %s", kind.upper(), backend_name, location)
+                    except Exception as e:
+                        logger.warning("Fallo guardando %s en %s: %s", filename, backend_name, e)
 
     except Exception as e:
         logger.warning("No se pudieron extraer archivos del ZIP %s: %s", file_path.name, e)
+
+    return locations
 
 
 class FileWrapper:
@@ -186,7 +208,20 @@ async def _process_single_file(file_path: Path, job_id: Optional[str], tenant_sl
 
         result = await use_case.execute(FileWrapper(file_path))
 
-        _extract_files_to_processed(file_path, processed_dir, result["data"])
+        integration_config_url = os.getenv(
+            "INTEGRATION_CONFIG_URL", "http://integration-config-service:8007"
+        )
+        storage = await resolve_storage(
+            client=IntegrationConfigClient(base_url=integration_config_url),
+            tenant_slug=tenant_slug,
+            local_fallback_dir=processed_dir,
+        )
+        locations = await _extract_files_to_processed(
+            file_path, storage.backends, storage.naming_pattern, result["data"]
+        )
+        DocumentRepository(db).update_storage_locations(
+            result["document_id"], locations["pdf"], locations["xml"]
+        )
 
         acc_status, acc_error = await _trigger_accounting(result["document_id"])
 

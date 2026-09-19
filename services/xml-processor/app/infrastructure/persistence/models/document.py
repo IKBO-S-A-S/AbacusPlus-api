@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, Date, DateTime, Float, ForeignKey, Integer, String
+from sqlalchemy import JSON, Column, Date, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import relationship
 
 from app.infrastructure.config.database import Base
@@ -41,6 +41,8 @@ class Document(Base):
     register_at = Column(DateTime, default=datetime.now(timezone.utc))
     status = Column(Integer, ForeignKey("document_statuses.id"), nullable=False, default=100)
     payment_type_id = Column(Integer, nullable=True)
+    pdf_storage_locations = Column(JSON, nullable=False, default=dict)
+    xml_storage_locations = Column(JSON, nullable=False, default=dict)
 
     # Relación con DocumentDetail
     details = relationship("DocumentDetail", back_populates="document")

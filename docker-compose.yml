@@ -292,6 +292,7 @@ services:
       - PYTHONUNBUFFERED=1
       - JWT_PUBLIC_KEY=${JWT_PUBLIC_KEY}
       - INTERNAL_SECRET=${INTERNAL_SECRET}
+      - STORAGE_SECRETS_KEY=${STORAGE_SECRETS_KEY}
     command: uvicorn app.main:app --host 0.0.0.0 --port 8007 --reload
     depends_on:
       database:

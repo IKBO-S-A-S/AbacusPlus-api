@@ -8,6 +8,7 @@ from app.application.dto.documents import (
     JobSteps,
     StepAccounting,
     StepDownloaded,
+    StepError,
     StepSummary,
     StepXmlProcessed,
 )
@@ -110,6 +111,7 @@ class GetBatchStatusUseCase:
             if xml_done:
                 if xml_status == "error":
                     xml.error += 1
+                    xml.errors.append(StepError(job_id=job_id, error=xml_err or "Error desconocido"))
                     if xml_err.startswith("AUTH_FAILED:"):
                         auth_error_messages.append(xml_err[len("AUTH_FAILED:"):].strip())
                 else:
@@ -121,12 +123,14 @@ class GetBatchStatusUseCase:
             # accounting — solo aplica si xml no tuvo error
             acc_done = _parse_bool(progress.get("accounting_done", "0"))
             acc_status = progress.get("accounting_status", "")
+            acc_err = progress.get("accounting_error", "")
             if xml_status == "error":
                 # No hay causación para XMLs con error — se descuenta del total
                 pass
             elif acc_done:
                 if acc_status == "error":
                     acc.error += 1
+                    acc.errors.append(StepError(job_id=job_id, error=acc_err or "Error desconocido"))
                 else:
                     acc.done += 1
             else:
