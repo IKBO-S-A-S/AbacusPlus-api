@@ -1,8 +1,5 @@
-"""RF-03 · Publicación del PDF y el XML del documento en Amazon S3.
-
-El alcance describe el flujo así: el sistema descompone el ZIP de la DIAN, sube el PDF
-(y opcionalmente el XML) al bucket **consumiendo la API existente**, y guarda en la base
-el enlace que ésta retorna para poder renderizarlo en el detalle.
+"""RF-03 · Publicación del PDF y el XML del documento en los backends de almacenamiento
+configurados por el tenant (S3 y/o SharePoint; local si no hay ninguno).
 
 Este caso de uso concentra ese paso. Antes vivía embebido en el trabajador de descargas,
 con dos consecuencias: los documentos cargados manualmente nunca obtenían enlace, y no
@@ -11,34 +8,53 @@ extraerlo, la misma lógica sirve a las dos rutas de ingreso y a la reparación 
 
 Los bytes se leen de la base, no del ZIP: son la fuente de verdad que ya quedó almacenada,
 así que un documento se puede publicar en cualquier momento posterior a su procesamiento.
+
+Las credenciales de S3/SharePoint son siempre las del tenant (`resolve_storage`,
+`integration-config-service`) — nunca variables de entorno globales del servicio.
 """
 
 import logging
-import re
+import os
+from pathlib import Path
 from typing import Optional
 
-from app.infrastructure.clients.s3_upload_client import S3UploadClient
+from app.application.use_cases.resolve_storage_backends import resolve_storage
+from app.domain.services.document_naming import build_document_filename
+from app.infrastructure.clients.integration_config_client import IntegrationConfigClient
 from app.infrastructure.persistence.models.document import Document
 from app.infrastructure.persistence.repositories.document_repository import DocumentRepository
+from app.infrastructure.storage.local_storage_adapter import LocalStorageAdapter
+from app.infrastructure.storage.s3_storage_adapter import S3StorageAdapter
 
 logger = logging.getLogger(__name__)
 
-# El nombre viaja en el path del objeto en S3: se acota al juego de caracteres seguro para
-# una clave, igual que hacía el trabajador de descargas.
-_UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 
-
-def _safe_filename(document: Document, ext: str) -> str:
-    numero = _UNSAFE_NAME.sub("_", str(document.document_number or "")).strip("_")
-    return f"{numero or 'documento'}.{ext}"
+def _document_data(document: Document) -> dict:
+    return {
+        "issuer_nit": document.issuer_nit,
+        "issuer_name": document.issuer_name,
+        "receiver_nit": document.receiver_nit,
+        "receiver_name": document.receiver_name,
+        "document_type": document.document_type,
+        "document_number": document.document_number,
+        "date": document.date,
+        "cufe": document.cufe,
+    }
 
 
 class PublishDocumentFilesUseCase:
-    """Sube a S3 los archivos ya almacenados de un documento y persiste sus enlaces."""
+    """Sube a los backends del tenant los archivos ya almacenados de un documento y
+    persiste sus enlaces."""
 
-    def __init__(self, document_repo: DocumentRepository, client: Optional[S3UploadClient] = None):
+    def __init__(
+        self,
+        document_repo: DocumentRepository,
+        integration_config_client: Optional[IntegrationConfigClient] = None,
+    ):
         self._repo = document_repo
-        self._client = client or S3UploadClient()
+        self._client = integration_config_client or IntegrationConfigClient(
+            base_url=os.getenv("INTEGRATION_CONFIG_URL", "http://integration-config-service:8007")
+        )
 
     async def execute(
         self, document_id: int, tenant_slug: str = "", overwrite: bool = False
@@ -46,59 +62,46 @@ class PublishDocumentFilesUseCase:
         """Publica el PDF y el XML de un documento.
 
         `overwrite=False` respeta los enlaces ya guardados: republicar un documento que ya
-        está en S3 gastaría ancho de banda y cambiaría una URL que el contador puede tener
-        abierta. Se envía `true` cuando se quiere rehacer un enlace roto o vencido.
+        está publicado gastaría ancho de banda y cambiaría una URL que el contador puede
+        tener abierta. Se envía `true` cuando se quiere rehacer un enlace roto o vencido.
 
-        Best-effort por archivo: que falle el XML no impide guardar el enlace del PDF.
+        Best-effort por archivo y por backend: que falle el XML no impide guardar el
+        enlace del PDF, y que falle un backend no impide subir a los demás configurados.
         """
         document = self._repo.get_by_id(document_id)
         if document is None:
             raise ValueError(f"Documento {document_id} no encontrado")
 
-        if not self._client.enabled:
-            return {
-                "document_id": document_id,
-                "pdf_url": document.pdf_url,
-                "xml_url": document.xml_url,
-                "uploaded": [],
-                "skipped": ["pdf", "xml"],
-                "warnings": ["La subida a S3 no está configurada; no se publicó ningún archivo."],
-            }
+        local_fallback_dir = Path(os.getenv("DOWNLOADS_DIR", "/app/downloads")) / "processed"
+        storage = await resolve_storage(
+            client=self._client,
+            tenant_slug=tenant_slug,
+            local_fallback_dir=local_fallback_dir,
+        )
+        base_name = build_document_filename(storage.naming_pattern, _document_data(document))
 
         uploaded: list[str] = []
         skipped: list[str] = []
         warnings: list[str] = []
 
-        pdf_link = await self._publish(
-            document,
-            "pdf",
-            document.pdf_data,
-            document.pdf_url,
-            tenant_slug,
-            overwrite,
-            skipped,
-            warnings,
+        pdf_locations, pdf_link = await self._publish(
+            base_name, "pdf", document.pdf_data, document.pdf_url, storage.backends, overwrite, skipped, warnings
         )
-        if pdf_link:
+        if pdf_locations:
             uploaded.append("pdf")
 
-        xml_link = await self._publish(
-            document,
-            "xml",
-            document.xml_data,
-            document.xml_url,
-            tenant_slug,
-            overwrite,
-            skipped,
-            warnings,
+        xml_locations, xml_link = await self._publish(
+            base_name, "xml", document.xml_data, document.xml_url, storage.backends, overwrite, skipped, warnings
         )
-        if xml_link:
+        if xml_locations:
             uploaded.append("xml")
 
-        if uploaded:
-            actualizado = self._repo.update_file_urls(
-                document_id, pdf_url=pdf_link, xml_url=xml_link
+        if pdf_locations or xml_locations:
+            self._repo.update_storage_locations(
+                document_id, pdf_locations or document.pdf_storage_locations, xml_locations or document.xml_storage_locations
             )
+        if uploaded:
+            actualizado = self._repo.update_file_urls(document_id, pdf_url=pdf_link, xml_url=xml_link)
             document = actualizado or document
 
         return {
@@ -112,33 +115,49 @@ class PublishDocumentFilesUseCase:
 
     async def _publish(
         self,
-        document: Document,
+        base_name: str,
         kind: str,
         data: Optional[bytes],
         current_url: Optional[str],
-        tenant_slug: str,
+        backends: list,
         overwrite: bool,
         skipped: list[str],
         warnings: list[str],
-    ) -> Optional[str]:
-        """Sube un archivo concreto. Retorna el enlace nuevo, o None si no se publicó."""
+    ) -> tuple[dict, Optional[str]]:
+        """Sube un archivo concreto a cada backend configurado por el tenant.
+
+        Retorna (locations, pdf_url_o_xml_url): `locations` es el mapa {backend: ubicación}
+        de lo que se subió en esta ejecución; el segundo valor es la ubicación en S3
+        específicamente (si ese backend está entre los configurados), que es el único que
+        alimenta las columnas `pdf_url`/`xml_url` que consume el resto de la API.
+        """
         if not data:
             skipped.append(kind)
-            return None
+            return {}, None
         if current_url and not overwrite:
             skipped.append(kind)
-            return None
+            return {}, None
 
-        filename = _safe_filename(document, kind)
-        subir = self._client.upload_pdf if kind == "pdf" else self._client.upload_xml
-        link = await subir(data, filename, tenant_slug)
+        filename = f"{base_name}.{kind}"
+        locations: dict = {}
+        s3_link: Optional[str] = None
+        for backend in backends:
+            backend_name = type(backend).__name__
+            # El adaptador local preserva la estructura processed/{pdf,xml}/ existente;
+            # los adaptadores en la nube guardan el archivo plano bajo su prefijo/carpeta.
+            save_name = f"{kind}/{filename}" if isinstance(backend, LocalStorageAdapter) else filename
+            try:
+                location = await backend.save(data, save_name)
+                locations[backend_name] = location
+                if isinstance(backend, S3StorageAdapter):
+                    s3_link = location
+                logger.info("%s guardado (%s) → %s", kind.upper(), backend_name, location)
+            except Exception as e:
+                warnings.append(
+                    f"No se pudo publicar el {kind.upper()} en {backend_name}: {e}"
+                )
+                logger.warning("Fallo guardando %s en %s: %s", filename, backend_name, e)
 
-        if not link:
-            # El cliente ya registró la causa concreta; aquí se traduce a algo accionable
-            # para quien consume la respuesta desde la interfaz.
-            warnings.append(
-                f"No se pudo publicar el {kind.upper()} en S3. "
-                "Revise la conectividad con la API de subida y reintente."
-            )
-            return None
-        return link
+        if not locations:
+            return {}, None
+        return locations, s3_link

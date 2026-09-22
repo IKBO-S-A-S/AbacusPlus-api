@@ -1,6 +1,6 @@
 from datetime import date
 
-from app.infrastructure.queue.download_queue import _build_filename
+from app.domain.services.document_naming import build_document_filename as _build_filename
 
 
 class TestBuildFilename:
