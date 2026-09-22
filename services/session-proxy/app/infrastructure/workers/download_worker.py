@@ -78,14 +78,24 @@ async def _mark_downloaded(progress: JobProgressStore, track_id: str) -> None:
         mapping={
             "downloaded_done": "1",
             "downloaded_at": datetime.now(timezone.utc).isoformat(),
+            "download_status": "ok",
         },
     )
 
 
-async def _mark_failed(progress: JobProgressStore, track_id: str, error: str) -> None:
+async def _mark_failed(
+    progress: JobProgressStore, track_id: str, error: str, error_code: str = "UNKNOWN"
+) -> None:
     """
     Marca un documento como terminado con error para que el batch no quede colgado
-    en 'pending' indefinidamente. Reutiliza el paso xml_processed con status=error.
+    en 'pending' indefinidamente.
+
+    `download_status`/`download_error_code` son el registro real de que la descarga (no el
+    procesamiento del XML) fue lo que falló, y con qué motivo específico —DIAN_INVALID,
+    AUTH_LOST, FETCH_ERROR, etc., el mismo `kind` que ya traía `DianDownloadError` y que antes
+    se descartaba al convertir la excepción en texto plano. `xml_done`/`xml_status=error` se
+    conservan además por compatibilidad: son los que usa `is_done` para no dejar el batch
+    colgado, aunque el XML nunca haya llegado a procesarse.
     """
     redis = await progress._get_client()
     now = datetime.now(timezone.utc).isoformat()
@@ -94,6 +104,9 @@ async def _mark_failed(progress: JobProgressStore, track_id: str, error: str) ->
         mapping={
             "downloaded_done": "1",
             "downloaded_at": now,
+            "download_status": "error",
+            "download_error": error[:500],
+            "download_error_code": error_code,
             "xml_done": "1",
             "xml_at": now,
             "xml_status": "error",
@@ -136,7 +149,7 @@ async def download_batch(
     except DianDownloadError as e:
         logger.error("Batch %s ABORTADO — auth fallida: %s", batch_id, e)
         for track_id in track_ids:
-            await _mark_failed(progress, str(track_id), f"AUTH_FAILED: {e}")
+            await _mark_failed(progress, str(track_id), f"AUTH_FAILED: {e}", error_code="AUTH_FAILED")
         return {
             "batch_id": batch_id,
             "total": len(track_ids),
@@ -147,7 +160,9 @@ async def download_batch(
     except Exception as e:
         logger.error("Batch %s ABORTADO — error inesperado en auth: %s", batch_id, e)
         for track_id in track_ids:
-            await _mark_failed(progress, str(track_id), f"AUTH_ERROR: {type(e).__name__}: {e}")
+            await _mark_failed(
+                progress, str(track_id), f"AUTH_ERROR: {type(e).__name__}: {e}", error_code="AUTH_ERROR"
+            )
         return {
             "batch_id": batch_id,
             "total": len(track_ids),
@@ -163,7 +178,11 @@ async def download_batch(
                 content = await session.download(track_id)
             except DianDownloadError as e:
                 logger.warning("Documento %s no descargable: %s", track_id, e)
-                await _mark_failed(progress, track_id, str(e))
+                # `e.kind` ya trae el motivo específico (DIAN_INVALID, AUTH_LOST,
+                # FETCH_ERROR, CLOUDFLARE, AZURE_WAF...) — antes se perdía al convertir la
+                # excepción en texto plano, dejando al usuario sin forma de distinguir un
+                # documento que no existe en la DIAN de una caída transitoria de red.
+                await _mark_failed(progress, track_id, str(e), error_code=e.kind)
                 failed += 1
                 # Chrome revienta cuando el perfil persistente acumula estado degradado
                 # (cache/shaders de sesiones anteriores) tras muchos lanzamientos seguidos —
@@ -194,21 +213,26 @@ async def download_batch(
                         remaining = track_ids[track_ids.index(track_id) + 1 :]
                         for pending_id in remaining:
                             await _mark_failed(
-                                progress, str(pending_id), f"BROWSER_RELAUNCH_FAILED: {reopen_exc}"
+                                progress,
+                                str(pending_id),
+                                f"BROWSER_RELAUNCH_FAILED: {reopen_exc}",
+                                error_code="BROWSER_RELAUNCH_FAILED",
                             )
                         failed += len(remaining)
                         break
                 continue
             except Exception as e:
                 logger.error("Error inesperado descargando %s: %s", track_id, e)
-                await _mark_failed(progress, track_id, f"{type(e).__name__}: {e}")
+                await _mark_failed(
+                    progress, track_id, f"{type(e).__name__}: {e}", error_code=type(e).__name__
+                )
                 failed += 1
                 continue
 
             if not is_valid_zip(content):
                 msg = "Contenido descargado no es un ZIP válido (firma PK ausente)"
                 logger.warning("Documento %s: %s", track_id, msg)
-                await _mark_failed(progress, track_id, msg)
+                await _mark_failed(progress, track_id, msg, error_code="INVALID_ZIP")
                 failed += 1
                 continue
 

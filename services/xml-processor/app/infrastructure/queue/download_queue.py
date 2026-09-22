@@ -468,7 +468,7 @@ async def _process_single_file(
         )
 
         if progress:
-            await progress.mark_xml_done(job_id, "error", error=str(e))
+            await progress.mark_xml_done(job_id, "error", error=str(e), error_code=type(e).__name__)
 
     finally:
         db.close()

@@ -36,6 +36,7 @@ class JobProgressStore:
         status: str,
         document_id: Optional[int] = None,
         error: Optional[str] = None,
+        error_code: Optional[str] = None,
     ) -> None:
         client = await self._get_client()
         key = self._key(job_id)
@@ -45,6 +46,7 @@ class JobProgressStore:
             "xml_status": status,
             "xml_document_id": str(document_id) if document_id else "",
             "xml_error": error or "",
+            "xml_error_code": error_code or "",
         }
         await client.hset(key, mapping=mapping)
         await client.expire(key, _TTL_SECONDS)
@@ -55,6 +57,7 @@ class JobProgressStore:
         job_id: str,
         status: str,
         error: Optional[str] = None,
+        error_code: Optional[str] = None,
     ) -> None:
         client = await self._get_client()
         key = self._key(job_id)
@@ -63,6 +66,7 @@ class JobProgressStore:
             "accounting_at": datetime.now(timezone.utc).isoformat(),
             "accounting_status": status,
             "accounting_error": error or "",
+            "accounting_error_code": error_code or "",
         }
         await client.hset(key, mapping=mapping)
         await client.expire(key, _TTL_SECONDS)

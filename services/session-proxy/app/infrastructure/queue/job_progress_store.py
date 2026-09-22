@@ -2,18 +2,24 @@
 Almacena y recupera el progreso por pasos de cada job de descarga en Redis.
 
 Estructura del hash Redis  job_progress:{job_id}:
-  track_id          str
-  downloaded_done   "1" | "0"
-  downloaded_at     ISO 8601 | ""
-  xml_done          "1" | "0"
-  xml_at            ISO 8601 | ""
-  xml_status        "added" | "duplicate" | "error" | ""
-  xml_document_id   int str | ""
-  xml_error         str | ""
-  accounting_done   "1" | "0"
-  accounting_at     ISO 8601 | ""
-  accounting_status "triggered" | "error" | ""
-  accounting_error  str | ""
+  track_id            str
+  downloaded_done     "1" | "0"
+  downloaded_at       ISO 8601 | ""
+  download_status     "ok" | "error" | ""
+  download_error      str | ""
+  download_error_code "DIAN_INVALID" | "AUTH_LOST" | "AUTH_FAILED" | "FETCH_ERROR" |
+                      "INVALID_ZIP" | "BROWSER_RELAUNCH_FAILED" | ... | ""
+  xml_done            "1" | "0"
+  xml_at              ISO 8601 | ""
+  xml_status          "added" | "duplicate" | "error" | ""
+  xml_document_id     int str | ""
+  xml_error           str | ""
+  xml_error_code      str | ""
+  accounting_done     "1" | "0"
+  accounting_at       ISO 8601 | ""
+  accounting_status   "triggered" | "error" | ""
+  accounting_error    str | ""
+  accounting_error_code str | ""
 """
 
 import logging
@@ -49,15 +55,20 @@ class JobProgressStore:
                 "track_id": track_id,
                 "downloaded_done": "0",
                 "downloaded_at": "",
+                "download_status": "",
+                "download_error": "",
+                "download_error_code": "",
                 "xml_done": "0",
                 "xml_at": "",
                 "xml_status": "",
                 "xml_document_id": "",
                 "xml_error": "",
+                "xml_error_code": "",
                 "accounting_done": "0",
                 "accounting_at": "",
                 "accounting_status": "",
                 "accounting_error": "",
+                "accounting_error_code": "",
             },
         )
         await client.expire(key, _TTL_SECONDS)

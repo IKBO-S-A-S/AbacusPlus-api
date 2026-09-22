@@ -54,6 +54,18 @@ class DownloadJobStatus(BaseModel):
 class StepDownloaded(BaseModel):
     done: bool
     at: Optional[str] = None
+    status: Optional[str] = Field(None, description="ok | error")
+    error: Optional[str] = Field(None, description="Mensaje legible del motivo del fallo.")
+    error_code: Optional[str] = Field(
+        None,
+        description=(
+            "Motivo específico: DIAN_INVALID (el documento no existe en el portal), "
+            "AUTH_LOST/AUTH_FAILED (token vencido o sesión perdida), FETCH_ERROR/CLOUDFLARE/"
+            "AZURE_WAF (fallo transitorio de red o del portal, reintentable), INVALID_ZIP "
+            "(la descarga no trajo un ZIP válido), BROWSER_RELAUNCH_FAILED (el navegador no "
+            "pudo relanzarse tras un crash)."
+        ),
+    )
 
 
 class StepXmlProcessed(BaseModel):
@@ -62,6 +74,9 @@ class StepXmlProcessed(BaseModel):
     status: Optional[str] = Field(None, description="added | duplicate | error")
     document_id: Optional[int] = None
     error: Optional[str] = None
+    error_code: Optional[str] = Field(
+        None, description="Clase de la excepción que causó el fallo al procesar el XML."
+    )
 
 
 class StepAccounting(BaseModel):
@@ -69,6 +84,7 @@ class StepAccounting(BaseModel):
     at: Optional[str] = None
     status: Optional[str] = Field(None, description="triggered | error")
     error: Optional[str] = None
+    error_code: Optional[str] = None
 
 
 class JobSteps(BaseModel):
@@ -92,6 +108,14 @@ class JobProgressDetail(BaseModel):
 class StepError(BaseModel):
     job_id: str = Field(..., description="Track ID del documento que falló en esta etapa.")
     error: str = Field(..., description="Mensaje de error capturado para esta etapa.")
+    error_code: Optional[str] = Field(
+        None,
+        description=(
+            "Código específico del motivo (ver la descripción de cada paso en `steps`). "
+            "Permite distinguir programáticamente, por ejemplo, un documento inexistente en "
+            "la DIAN (no reintentable) de una caída transitoria de red (sí reintentable)."
+        ),
+    )
 
 
 class StepSummary(BaseModel):

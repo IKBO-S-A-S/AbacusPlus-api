@@ -56,6 +56,13 @@ async def enqueue_document_downloads(
         "- **downloaded** — ZIP descargado del portal DIAN.\n"
         "- **xml_processed** — XML parseado y guardado en base de datos.\n"
         "- **accounting** — Asiento contable generado por el LLM.\n\n"
+        "`summary.<etapa>.errors` trae, para cada documento fallido, un `error_code` "
+        "específico además del mensaje — el de `downloaded` distingue si el documento "
+        "**no existe en la DIAN** (`DIAN_INVALID`, no reintentable), si el **token venció** "
+        "(`AUTH_FAILED`/`AUTH_LOST`, hace falta un enlace nuevo) o si fue una **caída "
+        "transitoria** (`FETCH_ERROR`/`CLOUDFLARE`/`AZURE_WAF`, reintentable). Un fallo de "
+        "descarga se reporta únicamente en `downloaded` — nunca aparece también en "
+        "`xml_processed`, ya que el XML nunca llegó a procesarse.\n\n"
         "Cuando `is_done` es `true` se incluye `total_time_seconds` con el tiempo total.\n\n"
         "Usa `?detail=true` para incluir el campo `jobs` con el progreso individual de cada documento."
     ),
