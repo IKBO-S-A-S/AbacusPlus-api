@@ -89,10 +89,19 @@ class JobProgressDetail(BaseModel):
 # ── Resumen por paso del batch ─────────────────────────────────────────────────
 
 
+class StepError(BaseModel):
+    job_id: str = Field(..., description="Track ID del documento que falló en esta etapa.")
+    error: str = Field(..., description="Mensaje de error capturado para esta etapa.")
+
+
 class StepSummary(BaseModel):
     done: int
     pending: int
     error: int
+    errors: list[StepError] = Field(
+        default_factory=list,
+        description="Detalle de los errores de esta etapa (job_id + mensaje). Siempre presente, sin necesitar ?detail=true.",
+    )
 
 
 class BatchStepSummary(BaseModel):

@@ -4,7 +4,7 @@ import os
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException
-from sqlalchemy import NullPool, create_engine
+from sqlalchemy import NullPool, create_engine, text
 from sqlalchemy.orm import Session
 
 from app.application.dto.catalog import (
@@ -73,6 +73,109 @@ def _migrate_tenant_db(engine) -> None:
     con el esquema a medias.
     """
     apply_tenant_migrations(engine, create_tables=True, strict=True)
+    with engine.connect() as conn:
+        conn.execute(
+            text("""
+            INSERT INTO document_statuses (id, name) VALUES
+                (0, 'Error'), (100, 'Procesado'), (200, 'Causado'),
+                (300, 'Aprobado'), (400, 'Contabilizada')
+            ON CONFLICT (id) DO NOTHING
+        """)
+        )
+        conn.execute(
+            text("""
+            DO $$
+            BEGIN
+                IF (SELECT data_type FROM information_schema.columns
+                    WHERE table_name='documents' AND column_name='status') = 'character varying' THEN
+                    ALTER TABLE documents ALTER COLUMN status TYPE INTEGER USING
+                        CASE status
+                            WHEN 'Procesado'      THEN 100
+                            WHEN 'procesado'      THEN 100
+                            WHEN 'processed'      THEN 100
+                            WHEN 'Causado'        THEN 200
+                            WHEN 'causado'        THEN 200
+                            WHEN 'Aprobado'       THEN 300
+                            WHEN 'aprobado'       THEN 300
+                            WHEN 'Contabilizada'  THEN 400
+                            WHEN 'contabilizada'  THEN 400
+                            ELSE 0
+                        END;
+                END IF;
+            END $$;
+        """)
+        )
+        conn.execute(
+            text(
+                "ALTER TABLE processing_logs " "ADD COLUMN IF NOT EXISTS xml_filename VARCHAR(255)"
+            )
+        )
+        conn.execute(
+            text(
+                "ALTER TABLE processing_logs "
+                "ADD COLUMN IF NOT EXISTS accounting_status VARCHAR(20)"
+            )
+        )
+        conn.execute(
+            text("ALTER TABLE processing_logs " "ADD COLUMN IF NOT EXISTS accounting_error TEXT")
+        )
+        conn.execute(
+            text(
+                "ALTER TABLE documents "
+                "ALTER COLUMN issuer_phone TYPE VARCHAR(100), "
+                "ALTER COLUMN receiver_phone TYPE VARCHAR(100)"
+            )
+        )
+        conn.execute(
+            text("ALTER TABLE issuers " "ADD COLUMN IF NOT EXISTS tipo_contribuyente VARCHAR(50)")
+        )
+        # Refactor contable: reemplazar asiento por asignación de cuentas por ítem
+        conn.execute(
+            text("ALTER TABLE documents DROP COLUMN IF EXISTS accounting_entry_id")
+        )
+        conn.execute(
+            text(
+                "ALTER TABLE documents "
+                "ADD COLUMN IF NOT EXISTS payment_type_id INTEGER "
+                "REFERENCES integration_payment_types(id)"
+            )
+        )
+        conn.execute(
+            text("ALTER TABLE document_details ADD COLUMN IF NOT EXISTS code VARCHAR(50)")
+        )
+        conn.execute(
+            text(
+                "ALTER TABLE document_details "
+                "ADD COLUMN IF NOT EXISTS type VARCHAR(20) NOT NULL DEFAULT 'Account'"
+            )
+        )
+        conn.execute(
+            text(
+                "ALTER TABLE document_details "
+                "ADD COLUMN IF NOT EXISTS tax_id INTEGER "
+                "REFERENCES integration_taxes(id)"
+            )
+        )
+        conn.execute(
+            text(
+                "ALTER TABLE document_details "
+                "ADD COLUMN IF NOT EXISTS cost_center_id INTEGER "
+                "REFERENCES integration_cost_centers(id)"
+            )
+        )
+        conn.execute(
+            text(
+                "ALTER TABLE documents "
+                "ADD COLUMN IF NOT EXISTS pdf_storage_locations JSONB NOT NULL DEFAULT '{}'"
+            )
+        )
+        conn.execute(
+            text(
+                "ALTER TABLE documents "
+                "ADD COLUMN IF NOT EXISTS xml_storage_locations JSONB NOT NULL DEFAULT '{}'"
+            )
+        )
+        conn.commit()
 
 
 @router.post(

@@ -18,3 +18,4 @@ PyJWT==2.13.0
 cryptography==50.0.0
 boto3==1.43.78
 defusedxml==0.7.1
+msal>=1.28.0,<2.0

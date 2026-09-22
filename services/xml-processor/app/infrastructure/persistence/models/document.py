@@ -16,6 +16,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import JSON, Column, Date, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import relationship
 
 from app.domain.services.line_taxes import (
@@ -161,6 +162,8 @@ class Document(Base):
     # Número de intentos de contabilización acumulados. Vive en el documento además de en la
     # cola para que la vista pueda mostrar «intento 3 de 5» sin consultar la cola.
     accounting_attempts = Column(Integer, nullable=False, server_default=text("0"), default=0)
+    pdf_storage_locations = Column(JSON, nullable=False, default=dict)
+    xml_storage_locations = Column(JSON, nullable=False, default=dict)
 
     # Relación con DocumentDetail
     details = relationship("DocumentDetail", back_populates="document")

@@ -2,9 +2,7 @@ import asyncio
 import contextlib
 import logging
 import os
-import re
 import shutil
-import unicodedata
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Optional
@@ -14,7 +12,9 @@ import httpx
 from app.application.use_cases.process_xml import ProcessXmlUseCase
 from app.application.use_cases.publish_document_files import PublishDocumentFilesUseCase
 from app.domain.exceptions.base import DuplicateEntityException
+from app.domain.services.document_naming import sanitize_name
 from app.infrastructure.clients.integration_config_client import IntegrationConfigClient
+from app.infrastructure.clients.rag_client import RagClient
 from app.infrastructure.config.database import SessionLocal
 from app.infrastructure.config.tenant_connection_manager import get_session_for_tenant
 from app.infrastructure.persistence.models.processing_log import ProcessingLog
@@ -61,15 +61,6 @@ def _peek_xml_filename(file_path: Path) -> Optional[str]:
     return None
 
 
-def _sanitize_name(text: str) -> str:
-    """Elimina caracteres especiales y normaliza el texto para usar en nombres de archivo."""
-    text = unicodedata.normalize("NFKD", text)
-    text = text.encode("ascii", "ignore").decode("ascii")
-    text = re.sub(r"[^\w\s\-]", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
-
-
 def _build_pdf_name(
     document_date, document_type: str, document_number: str, issuer_name: str
 ) -> str:
@@ -82,23 +73,26 @@ def _build_pdf_name(
     except Exception:
         date_str = str(document_date).replace("-", "")[:8]
 
-    doc_type = _sanitize_name(document_type or "")
-    doc_number = _sanitize_name(document_number or "")
-    issuer = _sanitize_name(issuer_name or "")
+    doc_type = sanitize_name(document_type or "")
+    doc_number = sanitize_name(document_number or "")
+    issuer = sanitize_name(issuer_name or "")
     suffix = " ".join(part for part in [doc_type, doc_number, issuer] if part).strip()
     return f"IKB - DOCU - {date_str} - V01 - {suffix}.pdf"
 
 
 def _extract_files_to_processed(
     file_path: Path, processed_dir: Path, document_data: dict
-) -> tuple[Optional[bytes], Optional[bytes]]:
+) -> tuple[Optional[bytes], Optional[bytes], Optional[Path], Optional[Path]]:
     """
     Descomprime el ZIP y:
     - Deja el XML en processed/xml/{nombre_original}.xml
     - Deja el PDF en processed/pdf/{nomenclatura_IKB}.pdf
 
-    Retorna (pdf_bytes, xml_bytes) para poder almacenarlos en la base de datos y visualizarlos
-    luego. Cada uno es None si el ZIP no lo contiene.
+    Retorna (pdf_bytes, xml_bytes, pdf_path, xml_path). Los bytes alimentan la base de datos
+    para poder visualizar el documento sin volver a la DIAN; las rutas son las que
+    `_finalize_local_files` borra una vez confirmada la subida a S3/SharePoint — sin esta
+    copia intermedia en disco, un tenant con almacenamiento en la nube acumularía para
+    siempre el mismo PDF/XML dos veces: uno en el bucket/SharePoint y otro aquí.
     """
     pdf_dir = processed_dir / "pdf"
     xml_dir = processed_dir / "xml"
@@ -107,6 +101,8 @@ def _extract_files_to_processed(
 
     pdf_bytes: Optional[bytes] = None
     xml_bytes: Optional[bytes] = None
+    pdf_path: Optional[Path] = None
+    xml_path: Optional[Path] = None
     try:
         with zipfile.ZipFile(str(file_path)) as zf:
             for member in zf.namelist():
@@ -121,6 +117,7 @@ def _extract_files_to_processed(
                         xml_bytes = data
                     dest = xml_dir / member_name
                     dest.write_bytes(data)
+                    xml_path = dest
                     logger.info("XML extraído → %s", dest)
 
                 elif name_lower.endswith(".pdf"):
@@ -136,12 +133,53 @@ def _extract_files_to_processed(
                     )
                     dest = pdf_dir / pdf_name
                     dest.write_bytes(data)
+                    pdf_path = dest
                     logger.info("PDF extraído y renombrado → %s", dest)
 
     except Exception as e:
         logger.warning("No se pudieron extraer archivos del ZIP %s: %s", file_path.name, e)
 
-    return pdf_bytes, xml_bytes
+    return pdf_bytes, xml_bytes, pdf_path, xml_path
+
+
+def _is_cloud_backed(locations: dict) -> bool:
+    """True si el mapa de ubicaciones tiene algún backend que no sea el fallback local.
+
+    `resolve_storage` (RF-03) resuelve los backends de un tenant una sola vez para PDF y XML
+    por igual: si hay S3 y/o SharePoint configurados y activos se usan esos —nunca junto con
+    local—, y si no hay ninguno cae a `LocalStorageAdapter`. Por eso basta con mirar las
+    claves de un mapa para saber si el documento quedó respaldado en la nube.
+    """
+    return bool(locations) and any(k != "LocalStorageAdapter" for k in locations)
+
+
+def _finalize_local_files(
+    file_path: Path,
+    processed_dir: Path,
+    cloud_backed: bool,
+    extracted_paths: tuple[Optional[Path], ...] = (),
+) -> None:
+    """Decide qué hacer con el ZIP y las copias locales extraídas de él.
+
+    Si el tenant no tiene S3 ni SharePoint configurados, el disco local ES el almacenamiento
+    definitivo del documento — se conserva todo, como hasta ahora. Si sí los tiene y la
+    publicación no reportó ningún warning, esas copias en disco son redundantes desde el
+    instante en que S3/SharePoint confirmaron la subida: guardarlas para siempre solo
+    acumula espacio sin ningún documento que no esté ya seguro en la nube.
+    """
+    if not cloud_backed:
+        shutil.move(str(file_path), str(processed_dir / file_path.name))
+        return
+
+    for path in extracted_paths:
+        if path is not None:
+            with contextlib.suppress(Exception):
+                path.unlink()
+    with contextlib.suppress(Exception):
+        file_path.unlink()
+    logger.info(
+        "ZIP y copias locales borrados tras confirmar subida a S3/SharePoint: %s", file_path.name
+    )
 
 
 def _read_pdf_from_zip(file_path: Path) -> Optional[bytes]:
@@ -255,7 +293,16 @@ async def _process_single_file(
 
         result = await use_case.execute(FileWrapper(file_path))
 
-        pdf_bytes, xml_bytes = _extract_files_to_processed(file_path, processed_dir, result["data"])
+        pdf_bytes, xml_bytes, pdf_path, xml_path = _extract_files_to_processed(
+            file_path, processed_dir, result["data"]
+        )
+
+        # Best-effort: un backend caído no puede tumbar el procesamiento del XML, pero el
+        # fallo debe quedar en processing_logs (consultable por API) y no solo en el log de
+        # texto del contenedor — de lo contrario una caída de S3/SharePoint pasa inadvertida.
+        storage_status: Optional[str] = None
+        storage_error: Optional[str] = None
+        cloud_backed = False
 
         # Almacena el PDF y el XML oficiales de la DIAN (venían dentro del ZIP) ligados al
         # documento, para poder visualizarlos luego sin volver a la DIAN. Best-effort: si
@@ -272,19 +319,34 @@ async def _process_single_file(
                         doc.xml_data = xml_bytes
                     db.commit()
 
-                    # RF-03: la publicación en S3 vive en su propio caso de uso, que lee los
-                    # bytes ya almacenados. Así la misma lógica sirve a esta ruta, a la carga
-                    # manual y al reintento posterior, sin duplicarse en tres sitios.
+                    # RF-03: la publicación en S3/SharePoint vive en su propio caso de uso, que
+                    # lee los bytes ya almacenados. Así la misma lógica sirve a esta ruta, a la
+                    # carga manual y al reintento posterior, sin duplicarse en tres sitios.
                     publicacion = await PublishDocumentFilesUseCase(repo).execute(
                         result["document_id"], tenant_slug=tenant_slug
                     )
+                    if publicacion["warnings"]:
+                        storage_status = "error"
+                        storage_error = "; ".join(publicacion["warnings"])
+                    elif publicacion["uploaded"]:
+                        storage_status = "ok"
+                        # Solo se borra la copia local si CADA backend configurado aceptó la
+                        # subida (sin warnings) — con uno solo caído, la copia en disco sigue
+                        # siendo la única evidencia de ese archivo hasta el próximo reintento.
+                        refreshed = repo.get_by_id(result["document_id"])
+                        if refreshed is not None:
+                            cloud_backed = _is_cloud_backed(
+                                refreshed.pdf_storage_locations
+                            ) or _is_cloud_backed(refreshed.xml_storage_locations)
                     logger.info(
-                        "Documento DIAN almacenado (id=%s, publicado en S3: %s)",
+                        "Documento DIAN almacenado (id=%s, publicado en: %s)",
                         result["document_id"],
                         ", ".join(publicacion["uploaded"]) or "nada",
                     )
             except Exception as e:  # best-effort: no romper el procesamiento del XML
                 db.rollback()
+                storage_status = "error"
+                storage_error = f"{type(e).__name__}: {e}"
                 logger.warning("No se pudo almacenar PDF/XML oficial en BD: %s", e)
 
         acc_status, acc_error = await _trigger_accounting(result["document_id"])
@@ -298,10 +360,13 @@ async def _process_single_file(
                 document_number=result["data"]["document_number"],
                 accounting_status=acc_status,
                 accounting_error=acc_error,
+                storage_status=storage_status,
+                storage_error=storage_error,
             )
         )
-        shutil.move(str(file_path), str(processed_dir / file_path.name))
-        logger.info("ZIP procesado → XML: %s — movido a processed/", xml_filename)
+        _finalize_local_files(file_path, processed_dir, cloud_backed, (pdf_path, xml_path))
+        if not cloud_backed:
+            logger.info("ZIP procesado → XML: %s — movido a processed/", xml_filename)
 
         if progress:
             await progress.mark_xml_done(job_id, "added", document_id=result["document_id"])
@@ -313,6 +378,9 @@ async def _process_single_file(
 
         existing_doc = DocumentRepository(db).get_by_document_number(doc_number)
         acc_status, acc_error = None, None
+        storage_status: Optional[str] = None
+        storage_error: Optional[str] = None
+        cloud_backed = False
         if existing_doc:
             # Backfill: si el documento ya existía pero aún no tenía el PDF/XML oficial,
             # los tomamos del ZIP (best-effort) y los almacenamos.
@@ -333,12 +401,25 @@ async def _process_single_file(
                     db.commit()
                     # Los enlaces se publican desde los bytes recién guardados; el caso de
                     # uso ya respeta los que existan, así que no hace falta comprobarlo aquí.
-                    await PublishDocumentFilesUseCase(DocumentRepository(db)).execute(
+                    backfill_repo = DocumentRepository(db)
+                    publicacion = await PublishDocumentFilesUseCase(backfill_repo).execute(
                         existing_doc.id, tenant_slug=tenant_slug
                     )
+                    if publicacion["warnings"]:
+                        storage_status = "error"
+                        storage_error = "; ".join(publicacion["warnings"])
+                    elif publicacion["uploaded"]:
+                        storage_status = "ok"
+                        refreshed = backfill_repo.get_by_id(existing_doc.id)
+                        if refreshed is not None:
+                            cloud_backed = _is_cloud_backed(
+                                refreshed.pdf_storage_locations
+                            ) or _is_cloud_backed(refreshed.xml_storage_locations)
                     logger.info("PDF/XML oficial backfill en documento existente %s", doc_number)
             except Exception as ex:
                 db.rollback()
+                storage_status = "error"
+                storage_error = f"{type(ex).__name__}: {ex}"
                 logger.warning("No se pudo hacer backfill de PDF/XML oficial: %s", ex)
             already_has_entry = await _has_accounting_entry(existing_doc.id)
             if not already_has_entry:
@@ -355,10 +436,13 @@ async def _process_single_file(
                 document_number=doc_number,
                 accounting_status=acc_status,
                 accounting_error=acc_error,
+                storage_status=storage_status,
+                storage_error=storage_error,
             )
         )
-        shutil.move(str(file_path), str(processed_dir / file_path.name))
-        logger.info("ZIP duplicado → XML: %s — movido a processed/", xml_filename)
+        _finalize_local_files(file_path, processed_dir, cloud_backed)
+        if not cloud_backed:
+            logger.info("ZIP duplicado → XML: %s — movido a processed/", xml_filename)
 
         if progress:
             await progress.mark_xml_done(

@@ -98,18 +98,6 @@ services:
       - ACCOUNTING_SIIGO_TIMEOUT_SECONDS=${ACCOUNTING_SIIGO_TIMEOUT_SECONDS:-120}
       - ACCOUNTING_POLL_INTERVAL_SECONDS=${ACCOUNTING_POLL_INTERVAL_SECONDS:-5}
       - ACCOUNTING_BATCH_MAX_SIZE=${ACCOUNTING_BATCH_MAX_SIZE:-200}
-      # RF-03 — Almacenamiento S3 (por defecto MinIO local; en prod, credenciales AWS reales
-      # o el endpoint del Lambda del cliente vía S3_UPLOAD_API_URL).
-      - S3_BUCKET=${S3_BUCKET:-abacus-documents}
-      - S3_REGION=${S3_REGION:-us-east-1}
-      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-http://minio:9000}
-      - S3_PUBLIC_ENDPOINT_URL=${S3_PUBLIC_ENDPOINT_URL:-http://localhost:9100}
-      - S3_ACCESS_KEY=${S3_ACCESS_KEY:-abacus}
-      - S3_SECRET_KEY=${S3_SECRET_KEY:-abacus-minio-secret}
-      - S3_PRESIGN_EXPIRE=${S3_PRESIGN_EXPIRE:-604800}
-      # Alternativa: consumir el Lambda del cliente (si se define, tiene prioridad).
-      - S3_UPLOAD_API_URL=${S3_UPLOAD_API_URL:-}
-      - S3_UPLOAD_API_KEY=${S3_UPLOAD_API_KEY:-}
     command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload --reload-dir /app/app
     depends_on:
       database:
@@ -214,6 +202,12 @@ services:
       context: ./services/session-proxy
       dockerfile: Dockerfile
     container_name: abacus_session_proxy_worker
+    # Chrome headful (headless=false) compone y transporta frames vía MIT-SHM contra el
+    # Xvfb real, no solo memoria compartida entre procesos de renderizado — el límite por
+    # defecto de Docker (64MB) se agota casi de inmediato y Chrome crashea (crashpad) en la
+    # primera navegación real después del login, dejando la página cerrada para el resto
+    # del batch. `--disable-dev-shm-usage` NO cubre este uso; hace falta el tamaño real.
+    shm_size: "1gb"
     # Display virtual Xvfb para correr Chromium headful (headless=False), lo que reduce
     # drásticamente la detección de Cloudflare Turnstile. Restart-safe: limpia lock viejo
     # y espera a que Xvfb quede listo antes de arrancar el worker.
@@ -323,6 +317,7 @@ services:
       - INTERNAL_SECRET=${INTERNAL_SECRET}
       # Proyección del catálogo sincronizado sobre `cost_centers` (propiedad de xml-processor)
       - XML_PROCESSOR_URL=http://xml-processor:8001
+      - STORAGE_SECRETS_KEY=${STORAGE_SECRETS_KEY}
     command: uvicorn app.main:app --host 0.0.0.0 --port 8007 --reload
     depends_on:
       database:
@@ -389,7 +384,7 @@ services:
 
   # ── Almacenamiento de objetos S3 (RF-03) — MinIO, compatible con Amazon S3 ──
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:latest
     container_name: abacus_minio
     command: server /data --console-address ":9001"
     environment:
@@ -410,7 +405,7 @@ services:
 
   # Crea el bucket privado una vez que MinIO está listo.
   minio-init:
-    image: minio/mc:latest
+    image: quay.io/minio/mc:latest
     container_name: abacus_minio_init
     depends_on:
       minio:

@@ -477,6 +477,18 @@ class DocumentRepository(DocumentRepositoryPort):
         self.db.refresh(row)
         return row
 
+    def update_storage_locations(
+        self, document_id: int, pdf_locations: dict, xml_locations: dict
+    ) -> Optional[Document]:
+        row = self.db.query(Document).filter(Document.id == document_id).first()
+        if row is None:
+            return None
+        row.pdf_storage_locations = pdf_locations
+        row.xml_storage_locations = xml_locations
+        self.db.commit()
+        self.db.refresh(row)
+        return row
+
     def update_file_urls(
         self, document_id: int, pdf_url: Optional[str] = None, xml_url: Optional[str] = None
     ) -> Optional[Document]:
@@ -516,7 +528,9 @@ class DocumentRepository(DocumentRepositoryPort):
             is not None
         )
 
-    def find_most_frequent_cost_center(self, issuer_nit: str, description: str) -> Optional[int]:
+    def find_most_frequent_cost_center(
+        self, issuer_nit: str, description: str
+    ) -> Optional[int]:
         """Busca el cost_center_id más usado históricamente para descripciones
         similares del mismo emisor. Retorna None si no hay historial."""
         words = [w for w in description.strip().split() if len(w) > 3]

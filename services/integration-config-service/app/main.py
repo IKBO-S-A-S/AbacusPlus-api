@@ -20,6 +20,7 @@ from app.adapters.api.routers.purchase_invoice_parameters import (
 from app.adapters.api.routers.retention_criteria import router as retention_criteria_router
 from app.adapters.api.routers.retentions import router as retentions_router
 from app.adapters.api.routers.taxes import router as taxes_router
+from app.adapters.api.routers.storage import router as storage_router
 from app.domain.exceptions.base import DomainException
 from app.infrastructure.config.database import engine
 from app.infrastructure.config.logging import setup_logging
@@ -41,6 +42,7 @@ from app.infrastructure.persistence.models import tax as _tax_model  # noqa: F40
 from app.infrastructure.persistence.models import (
     tenant_fiscal_profile as _tenant_fiscal_profile_model,  # noqa: F401
 )
+from app.infrastructure.persistence.models import storage as _storage_model  # noqa: F401
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -85,6 +87,7 @@ app.include_router(retentions_router, prefix="/api/v1", tags=["integrations"])
 app.include_router(taxes_router, prefix="/api/v1", tags=["integrations"])
 app.include_router(products_router, prefix="/api/v1", tags=["integrations"])
 app.include_router(purchase_invoice_parameters_router, prefix="/api/v1", tags=["integrations"])
+app.include_router(storage_router, prefix="/api/v1", tags=["integrations"])
 app.include_router(internal_router)  # no prefix — path is /internal/provision-tenant
 
 logger.info("Integration Config Service started on port 8007")

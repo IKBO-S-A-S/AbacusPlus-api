@@ -66,6 +66,30 @@ class IntegrationConfigClient:
         """Ruta del catálogo, según el canal por el que hable este cliente."""
         return _RUTA_INTERNA if self._tenant_slug else _RUTA_CON_TOKEN
 
+    async def get_storage_settings(self, tenant_slug: str) -> Optional[dict]:
+        """Retorna la configuracion agregada de almacenamiento (S3/SharePoint/patron de
+        nombre) del tenant, con secretos desencriptados.
+
+        Llamada servicio-a-servicio (worker de background sin JWT de usuario): usa el
+        endpoint interno protegido con X-Internal-Secret, igual que provision-tenant.
+        Best-effort: retorna None si el servicio no esta disponible (=> fallback local).
+        """
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(
+                    f"{self._base_url}/internal/storage-settings",
+                    params={"tenant_slug": tenant_slug},
+                    headers={"X-Internal-Secret": os.environ.get("INTERNAL_SECRET", "")},
+                )
+                response.raise_for_status()
+                return response.json()
+        except Exception as exc:
+            logger.warning(
+                "No se pudo obtener configuracion de almacenamiento de integration-config-service: %s",
+                exc,
+            )
+            return None
+
     async def get_taxes(self, active_only: bool = True) -> list[dict]:
         """Catálogo de impuestos del tenant.
 
