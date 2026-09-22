@@ -39,6 +39,14 @@ EXPOSE 8004
 RUN groupadd -g 1000 appuser \
     && useradd -u 1000 -g appuser -m appuser \
     && chown -R appuser:appuser /app /ms-playwright
+# Xvfb (usado por session-proxy-worker para Chrome headful) rechaza crear
+# /tmp/.X11-unix cuando no corre como root ("_XSERVTransmkdir: euid != 0"). Sin él,
+# el DISPLAY nunca queda listo: Chrome arranca igual pero sin servidor X detrás, y
+# revienta ("Target page, context or browser has been closed") a los pocos segundos
+# de la primera navegación, justo cuando toca renderizar. Se crea aquí, en la capa de
+# imagen (persiste entre reinicios porque /tmp no es un tmpfs en este compose), con el
+# sticky bit 1777 estándar de X11 para que appuser pueda crear el socket dentro.
+RUN mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
 USER appuser
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8004"]

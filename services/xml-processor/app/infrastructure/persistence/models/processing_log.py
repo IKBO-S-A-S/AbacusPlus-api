@@ -17,4 +17,6 @@ class ProcessingLog(Base):
     error_message = Column(Text, nullable=True)
     accounting_status = Column(String(20), nullable=True)  # triggered | error | null
     accounting_error = Column(Text, nullable=True)
+    storage_status = Column(String(20), nullable=True)  # ok | error | null
+    storage_error = Column(Text, nullable=True)
     processed_at = Column(DateTime, default=datetime.utcnow)

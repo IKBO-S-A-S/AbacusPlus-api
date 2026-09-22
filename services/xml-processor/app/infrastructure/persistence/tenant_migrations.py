@@ -379,6 +379,25 @@ TENANT_MIGRATIONS: tuple[str, ...] = (
     # Va también aquí, y no solo en el modelo, porque `create_all` no añade índices a tablas
     # que ya existen: sin esta sentencia el índice solo aparecería en clientes nuevos.
     "CREATE INDEX IF NOT EXISTS ix_document_taxes_document ON document_taxes (document_id)",
+    # RF-03 · Trazabilidad de la publicación en S3/SharePoint. La subida automática al
+    # descargar de la DIAN es best-effort (un backend caído no puede tumbar el procesamiento
+    # del XML), y esa misma tolerancia la hacía invisible: el fallo solo quedaba en el log de
+    # texto del contenedor. Se guarda junto al resto del registro de procesamiento para que
+    # un fallo de conexión con S3 o SharePoint sea consultable por API, no solo por logs.
+    "ALTER TABLE processing_logs ADD COLUMN IF NOT EXISTS storage_status VARCHAR(20)",
+    "ALTER TABLE processing_logs ADD COLUMN IF NOT EXISTS storage_error TEXT",
+    # RF-03 · Ubicaciones de publicación por backend (S3/SharePoint/local). El modelo
+    # (`Document.pdf_storage_locations` / `.xml_storage_locations`) las tiene desde que se
+    # separó `PublishDocumentFilesUseCase`, pero nunca se agregó la migración: `create_all`
+    # solo crea tablas nuevas, no columnas nuevas en una tabla que ya existía. El resultado
+    # era `UndefinedColumn` en CADA consulta a `documents` de cualquier tenant aprovisionado
+    # antes de esa columna — el pipeline de descarga bajaba el ZIP pero moría al intentar
+    # leer o actualizar el documento, con el mensaje enterrado detrás de un `except Exception`
+    # genérico que además reventaba de nuevo al mover el archivo a `errors/`.
+    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS pdf_storage_locations JSONB NOT NULL "
+    "DEFAULT '{}'::jsonb",
+    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS xml_storage_locations JSONB NOT NULL "
+    "DEFAULT '{}'::jsonb",
 )
 
 

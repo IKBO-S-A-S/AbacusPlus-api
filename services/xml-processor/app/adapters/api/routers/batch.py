@@ -14,7 +14,7 @@ from app.dependencies import (
     get_process_single_file_use_case,
     get_processing_log_repo,
 )
-from app.infrastructure.config.auth_dependency import require_write
+from app.infrastructure.config.auth_dependency import require_internal_secret, require_write
 from app.infrastructure.persistence.repositories.processing_log_repository import (
     ProcessingLogRepository,
 )
@@ -48,7 +48,7 @@ async def process_downloads(
 
 @router.post(
     "/batch-jobs/file",
-    dependencies=[Depends(require_write)],
+    dependencies=[Depends(require_internal_secret)],
     response_model=EnqueueBatchResponse,
     status_code=202,
     summary="Procesar un ZIP específico por nombre de archivo",
@@ -57,6 +57,9 @@ async def process_downloads(
         "A diferencia de `POST /api/v1/batch-jobs/downloads`, este endpoint opera sobre un único archivo "
         "y asocia el procesamiento al `job_id` del worker que lo descargó, "
         "permitiendo actualizar el progreso en Redis.\n\n"
+        "**Uso interno**: lo llama `session-proxy-worker` justo después de bajar cada ZIP de "
+        "la DIAN, sin sesión de usuario detrás — se autentica con `X-Internal-Secret`, no con "
+        "bearer token, y por eso no pasa por el gateway.\n\n"
         "El archivo debe existir en `DOWNLOADS_DIR`. Si no existe retorna 404."
     ),
     response_description="Confirmación del archivo encolado.",
@@ -91,7 +94,12 @@ async def process_single_file(
         "**Estados de causación (`accounting_status`):**\n"
         "- `triggered` — el LLM recibió la solicitud y respondió con éxito.\n"
         "- `error` — la solicitud al LLM falló (ver `accounting_error`).\n"
-        "- `null` — no aplica (documento duplicado o con error de procesamiento)."
+        "- `null` — no aplica (documento duplicado o con error de procesamiento).\n\n"
+        "**Estados de publicación de archivos (`storage_status`, RF-03):**\n"
+        "- `ok` — el PDF/XML se subió a todos los backends configurados del tenant (S3 y/o SharePoint).\n"
+        "- `error` — algún backend falló al publicar (ver `storage_error`, p. ej. una caída de "
+        "conexión con S3 o SharePoint).\n"
+        "- `null` — no aplica (aún no había PDF/XML que publicar)."
     ),
     response_description="Lista de registros de procesamiento, ordenados del más reciente al más antiguo.",
 )
@@ -100,6 +108,10 @@ async def get_processing_logs(
         None,
         description="Filtrar por estado: `added`, `duplicate` o `error`.",
     ),
+    storage_status: Optional[str] = Query(
+        None,
+        description="Filtrar por resultado de publicación en S3/SharePoint: `ok` o `error`.",
+    ),
     log_repo: ProcessingLogRepository = Depends(get_processing_log_repo),
 ):
-    return log_repo.get_all(status=status)
+    return log_repo.get_all(status=status, storage_status=storage_status)

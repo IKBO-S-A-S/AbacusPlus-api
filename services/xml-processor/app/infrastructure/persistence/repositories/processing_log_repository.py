@@ -15,8 +15,12 @@ class ProcessingLogRepository:
         self.db.refresh(log)
         return log
 
-    def get_all(self, status: Optional[str] = None) -> list[ProcessingLog]:
+    def get_all(
+        self, status: Optional[str] = None, storage_status: Optional[str] = None
+    ) -> list[ProcessingLog]:
         query = self.db.query(ProcessingLog)
         if status:
             query = query.filter(ProcessingLog.status == status)
+        if storage_status:
+            query = query.filter(ProcessingLog.storage_status == storage_status)
         return query.order_by(ProcessingLog.processed_at.desc()).all()

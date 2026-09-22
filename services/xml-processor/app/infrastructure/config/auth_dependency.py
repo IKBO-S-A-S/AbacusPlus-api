@@ -1,7 +1,9 @@
+import hmac
+import os
 from typing import Annotated
 
 import jwt as pyjwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.infrastructure.config.jwt_validator import decode_token
@@ -74,6 +76,20 @@ def require_roles(*permitidos: str):
 
 #: Atajo para el caso mayoritario: escribir sobre un documento (RF-01, 02, 03, 05, 06, 07).
 require_write = require_roles(*ROLES_ESCRITURA)
+
+
+def require_internal_secret(x_internal_secret: str = Header(...)) -> None:
+    """Autentica llamadas servicio-a-servicio contra `INTERNAL_SECRET`, sin sesión de usuario.
+
+    `require_write` no sirve para el worker de descargas (session-proxy-worker): dispara
+    `POST /batch-jobs/file` justo después de bajar un ZIP de la DIAN, sin ningún usuario
+    detrás de esa llamada. `require_write` la rechazaba con 401 en cada intento — el ZIP
+    quedaba descargado pero nunca se procesaba, y nada lo dejaba visible salvo un warning
+    en el log de texto del worker.
+    """
+    expected = os.environ.get("INTERNAL_SECRET", "")
+    if not expected or not hmac.compare_digest(x_internal_secret, expected):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
 
 def get_tenant_db(token: Annotated[TokenData, Depends(get_token_data)]):

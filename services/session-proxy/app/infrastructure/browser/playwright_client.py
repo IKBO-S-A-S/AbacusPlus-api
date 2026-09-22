@@ -312,7 +312,23 @@ class BrowserDownloadSession:
         self._pw = await async_playwright().start()
         # Args mínimos: solo lo necesario para correr en contenedor. NO se incluye
         # --disable-blink-features=AutomationControlled (patchright lo maneja; pasarlo delata).
-        session_args = ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+        #
+        # Bajo Xvfb no hay GPU real: Chrome lo detecta y bloquea WebGL ("WebGL1/2
+        # blocklisted" en el log), y el proceso de GPU — intentando compositar de todos
+        # modos — revienta (crashpad, SIGSEGV/SIGTRAP) justo al renderizar el widget de
+        # Turnstile una segunda vez, tumbando todo el browser a mitad de la descarga
+        # ("Target page, context or browser has been closed"). --disable-gpu por sí solo
+        # NO bastó — seguía crasheando, solo que con otra señal—: hace falta forzar un
+        # backend GL de software explícito (SwiftShader vía ANGLE) para que el proceso GPU
+        # tenga una implementación real y estable en vez de intentar hardware inexistente.
+        session_args = [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--use-gl=angle",
+            "--use-angle=swiftshader",
+            "--disable-gpu-sandbox",
+        ]
         launch_kwargs = {
             "headless": headless,
             "args": session_args,
@@ -429,6 +445,23 @@ class BrowserDownloadSession:
             self._page.url,
             await self._page.title(),
         )
+
+    @property
+    def profile_dir(self) -> str:
+        return self._profile_dir
+
+    def is_alive(self) -> bool:
+        """False cuando Chrome murió a media sesión (crash real, no un timeout de descarga).
+
+        Bajo Xvfb, Chrome crashea de forma intermitente y no determinística — a veces
+        completa un batch de 24 documentos sin problema, a veces revienta en el primero,
+        con la misma configuración. Cuando el proceso muere, la página y el contexto quedan
+        cerrados para siempre y CADA descarga posterior fallará con el mismo
+        "Target page, context or browser has been closed", aunque el documento sí exista en
+        DIAN. Sin esta señal, un crash a mitad de lote condenaba el resto del batch entero a
+        fallar uno por uno; con ella, el worker puede relanzar el navegador y seguir.
+        """
+        return self._page is not None and not self._page.is_closed()
 
     async def close(self) -> None:
         try:

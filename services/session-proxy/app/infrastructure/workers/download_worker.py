@@ -10,8 +10,10 @@ resolver adaptativo de BrowserDownloadSession. El progreso se lleva por trackId 
 (clave = track_id), de modo que el endpoint de estado del batch sigue funcionando.
 """
 
+import contextlib
 import logging
 import os
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -49,13 +51,20 @@ def _build_auth_url(login_url: str, token: str, pk: str, rk: str) -> str:
 
 
 async def _trigger_xml_processing(filename: str, track_id: str, tenant_slug: str = "") -> None:
-    """Llama a xml-processor para que procese el ZIP descargado (job_id = track_id)."""
+    """Llama a xml-processor para que procese el ZIP descargado (job_id = track_id).
+
+    Este worker no tiene sesión de ningún usuario detrás — se despierta solo, encolado por
+    ARQ — así que se autentica con `X-Internal-Secret` en vez de un bearer token. Sin este
+    header el endpoint devuelve 401 y el ZIP queda descargado en disco pero nunca procesado,
+    sin que nada más que un warning de texto lo delate.
+    """
     xml_url = os.getenv("XML_PROCESSOR_URL", "http://xml-processor:8001")
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
                 f"{xml_url}/api/v1/batch-jobs/file",
                 json={"filename": filename, "job_id": track_id, "tenant_slug": tenant_slug},
+                headers={"X-Internal-Secret": os.getenv("INTERNAL_SECRET", "")},
             )
         logger.info("batch-jobs/file [%s] → HTTP %d", filename, response.status_code)
     except Exception as e:
@@ -156,6 +165,39 @@ async def download_batch(
                 logger.warning("Documento %s no descargable: %s", track_id, e)
                 await _mark_failed(progress, track_id, str(e))
                 failed += 1
+                # Chrome revienta cuando el perfil persistente acumula estado degradado
+                # (cache/shaders de sesiones anteriores) tras muchos lanzamientos seguidos —
+                # confirmado en vivo: el mismo batch pasó de 0/24 a 5/5 exitosos solo por
+                # borrar el perfil y arrancar de cero. Relanzar reutilizando el MISMO
+                # directorio de perfil no arregla nada porque el estado corrupto sigue ahí;
+                # hay que borrarlo antes de abrir la sesión nueva.
+                if not session.is_alive():
+                    logger.warning(
+                        "Sesión de navegador caída tras %s — perfil probablemente degradado, "
+                        "borrando y relanzando para continuar el batch",
+                        track_id,
+                    )
+                    stale_profile_dir = session.profile_dir
+                    with contextlib.suppress(Exception):
+                        await session.close()
+                    shutil.rmtree(stale_profile_dir, ignore_errors=True)
+                    try:
+                        session = BrowserDownloadSession(
+                            auth_url, timeout=timeout_ms, max_retries=max_retries
+                        )
+                        await session.open()
+                    except Exception as reopen_exc:
+                        logger.error(
+                            "No se pudo relanzar la sesión tras crash — abortando resto del batch: %s",
+                            reopen_exc,
+                        )
+                        remaining = track_ids[track_ids.index(track_id) + 1 :]
+                        for pending_id in remaining:
+                            await _mark_failed(
+                                progress, str(pending_id), f"BROWSER_RELAUNCH_FAILED: {reopen_exc}"
+                            )
+                        failed += len(remaining)
+                        break
                 continue
             except Exception as e:
                 logger.error("Error inesperado descargando %s: %s", track_id, e)
@@ -206,7 +248,13 @@ class WorkerSettings:
     on_startup = on_startup
     on_shutdown = on_shutdown
     redis_settings = RedisSettings.from_dsn(os.getenv("REDIS_URL", "redis://redis:6379"))
-    max_jobs = 2
+    # 1, no más: BrowserDownloadSession usa un directorio de perfil de Chrome FIJO y
+    # persistente (para conservar la cookie cf_clearance entre ejecuciones). Con
+    # max_jobs=2 dos batches concurrentes abren `launch_persistent_context` sobre el
+    # mismo directorio a la vez — Chrome rechaza el segundo por el lock ProcessSingleton
+    # y ambas sesiones terminan con las páginas cerradas a medio descargar
+    # ("Target page, context or browser has been closed") en vez de fallar limpio.
+    max_jobs = 1
     job_timeout = 1200
     keep_result = 3600
     max_tries = 2
