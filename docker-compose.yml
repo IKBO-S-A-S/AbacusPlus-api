@@ -6,7 +6,7 @@ services:
     image: nginx:alpine
     container_name: abacus_gateway
     ports:
-      - "8000:80"
+      - "8080:80"
     volumes:
       - ./services/gateway/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./services/gateway/docs.html:/usr/share/nginx/html/docs.html:ro
