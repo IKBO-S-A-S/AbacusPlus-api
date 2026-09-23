@@ -49,7 +49,7 @@ services:
       - ODOO_SERVICE_URL=http://odoo-service:8005
       - SIIGO_SERVICE_URL=http://siigo-service:8006
       - INTEGRATION_CONFIG_URL=http://integration-config-service:8007
-      - REDIS_URL=redis://redis:6379
+      - REDIS_URL=redis://redis:6380
     command: uvicorn app.main:app --host 0.0.0.0 --port 8008 --reload
     depends_on:
       database:
@@ -78,7 +78,7 @@ services:
       - RAG_SERVICE_URL=http://rag-service:8002
       - LLM_SERVICE_URL=http://llm-service:8003
       - DOWNLOADS_DIR=/app/downloads
-      - REDIS_URL=redis://redis:6379
+      - REDIS_URL=redis://redis:6380
       - JWT_PUBLIC_KEY=${JWT_PUBLIC_KEY}
       - INTERNAL_SECRET=${INTERNAL_SECRET}
       # RF-05 — Cola de contabilización en SIIGO.
@@ -187,7 +187,7 @@ services:
       - REPRESENTATIVE=${REPRESENTATIVE:-}
       - NIT=${NIT:-}
       - BROWSER_TIMEOUT_MS=${BROWSER_TIMEOUT_MS:-60000}
-      - REDIS_URL=redis://redis:6379
+      - REDIS_URL=redis://redis:6380
       - DOWNLOADS_DIR=/app/downloads
       - JWT_PUBLIC_KEY=${JWT_PUBLIC_KEY}
     command: uvicorn app.main:app --host 0.0.0.0 --port 8004 --reload --reload-dir /app/app
@@ -227,7 +227,7 @@ services:
       - EXTERNAL_LOGIN_PATH=${EXTERNAL_LOGIN_PATH:-/User/AuthToken}
       - EXTERNAL_FIXED_PK=${EXTERNAL_FIXED_PK:-}
       - EXTERNAL_FIXED_RK=${EXTERNAL_FIXED_RK:-}
-      - REDIS_URL=redis://redis:6379
+      - REDIS_URL=redis://redis:6380
       - DOWNLOADS_DIR=/app/downloads
       - XML_PROCESSOR_URL=http://xml-processor:8001
       - BROWSER_HEADLESS=false
@@ -375,8 +375,9 @@ services:
   redis:
     image: redis:alpine
     container_name: abacus_redis
+    command: redis-server --port 6380
     ports:
-      - "6379:6379"
+      - "6380:6380"
     volumes:
       - redis_data:/data
     networks:
