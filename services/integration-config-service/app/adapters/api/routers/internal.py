@@ -225,6 +225,9 @@ def _migrate_tenant_db(engine) -> None:
         # no habilita ReteICA, y uno con tarifa fuera de esta lista quedaba invisible para el
         # modelo). Se conserva una: la que sirve para calcular.
         "ALTER TABLE tenant_fiscal_profile DROP COLUMN IF EXISTS municipios",
+        # NIT de la empresa. `create_all` no agrega columnas a una tabla existente; en una base
+        # ya creada queda al final (Postgres no reordena), en una nueva queda tras `id`.
+        "ALTER TABLE tenant_fiscal_profile ADD COLUMN IF NOT EXISTS nit VARCHAR(20)",
     ]
 
     with engine.connect() as conn:

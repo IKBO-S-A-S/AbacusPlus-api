@@ -17,6 +17,11 @@ class TenantFiscalProfile(Base):
     __tablename__ = "tenant_fiscal_profile"
 
     id = Column(Integer, primary_key=True)
+    # NIT de la empresa, solo dígitos y sin dígito de verificación (p. ej. '900031352'). Se
+    # guarda como texto, igual que `issuers.nit` y `receivers.nit` en xml-processor, para poder
+    # compararlo tal cual con el NIT del receptor de la factura. Nullable: los perfiles
+    # existentes no lo tienen hasta que el contador lo diligencie.
+    nit = Column(String(20), nullable=True)
     # ── Condición como AGENTE de retención (define si la empresa retiene) ──
     agente_retencion_renta = Column(Boolean, nullable=False, default=False)
     agente_retencion_ica = Column(Boolean, nullable=False, default=False)

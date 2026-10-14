@@ -51,7 +51,14 @@ def get_fiscal_profile(
         "Régimen Simple."
     ),
     response_description="Perfil fiscal actualizado.",
-    responses={422: {"description": "Régimen inválido u otros datos fuera de rango."}},
+    responses={
+        422: {
+            "description": (
+                "Régimen inválido, NIT con caracteres no numéricos (o más de 20 dígitos) "
+                "u otros datos fuera de rango."
+            )
+        }
+    },
 )
 def upsert_fiscal_profile(
     request: FiscalProfileUpsertRequest,

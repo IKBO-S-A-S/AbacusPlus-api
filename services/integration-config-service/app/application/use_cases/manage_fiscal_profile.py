@@ -10,6 +10,7 @@ from app.infrastructure.persistence.repositories.tenant_fiscal_profile_repositor
 # Es deliberadamente conservador: sin confirmar que la empresa es agente de retención, no se
 # asume que retiene.
 _DEFAULT = FiscalProfileResponse(
+    nit=None,
     agente_retencion_renta=False,
     agente_retencion_ica=False,
     agente_retencion_iva=False,
