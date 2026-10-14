@@ -2,6 +2,7 @@ import logging
 import os
 import re
 from typing import Any, Optional
+from urllib.parse import unquote
 
 import httpx
 
@@ -46,9 +47,11 @@ class HttpxExternalClient(ExternalClientPort):
         self._fixed_rk = os.getenv("EXTERNAL_FIXED_RK", "")
 
     def _build_login_params(self, token: str, pk: str = "", rk: str = "") -> dict[str, str]:
-        params: dict[str, str] = {"token": token}
-        effective_pk = pk or self._fixed_pk
-        effective_rk = rk or self._fixed_rk
+        # httpx codifica los params; si pk llega ya codificado (copiado de la URL del portal,
+        # ej. `10910094%7C19406312`) se codificaría dos veces (`%257C`) y la DIAN responde 500.
+        params: dict[str, str] = {"token": unquote(token)}
+        effective_pk = unquote(pk or self._fixed_pk)
+        effective_rk = unquote(rk or self._fixed_rk)
         if effective_pk:
             params["pk"] = effective_pk
         if effective_rk:
