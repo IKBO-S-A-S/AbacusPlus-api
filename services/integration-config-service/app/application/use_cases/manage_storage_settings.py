@@ -4,6 +4,8 @@ from app.application.dto.storage import (
     SharePointStorageUpsertRequest,
 )
 from app.domain.exceptions.base import ValidationException
+from app.infrastructure.clients.s3_connection_checker import S3ConnectionChecker
+from app.infrastructure.clients.sharepoint_connection_checker import SharePointConnectionChecker
 from app.infrastructure.persistence.repositories.storage_repository import (
     DocumentNamingSettingRepository,
     S3StorageConfigRepository,
@@ -21,15 +23,22 @@ class ManageStorageSettingsUseCase:
         s3_repository: S3StorageConfigRepository,
         sharepoint_repository: SharePointStorageConfigRepository,
         naming_repository: DocumentNamingSettingRepository,
+        s3_connection_checker: S3ConnectionChecker | None = None,
+        sharepoint_connection_checker: SharePointConnectionChecker | None = None,
     ):
         self.s3_repository = s3_repository
         self.sharepoint_repository = sharepoint_repository
         self.naming_repository = naming_repository
+        self.s3_connection_checker = s3_connection_checker or S3ConnectionChecker()
+        self.sharepoint_connection_checker = (
+            sharepoint_connection_checker or SharePointConnectionChecker()
+        )
 
     def upsert_s3(self, request: S3StorageUpsertRequest):
+        """Guarda la configuracion y valida la conexion; el fallo de la validacion no la revierte."""
         if not request.bucket_name.strip():
             raise ValidationException("bucket_name is required")
-        return self.s3_repository.upsert(
+        values = dict(
             bucket_name=request.bucket_name.strip(),
             region=request.region.strip(),
             access_key_id=request.access_key_id.strip(),
@@ -37,14 +46,18 @@ class ManageStorageSettingsUseCase:
             endpoint_url=request.endpoint_url,
             key_prefix=request.key_prefix.strip(),
         )
+        config = self.s3_repository.upsert(**values)
+        connection = self.s3_connection_checker.check(**values)
+        return config, connection
 
     def get_s3(self):
         return self.s3_repository.get()
 
     def upsert_sharepoint(self, request: SharePointStorageUpsertRequest):
+        """Guarda la configuracion y valida la conexion; el fallo de la validacion no la revierte."""
         if not request.site_id.strip():
             raise ValidationException("site_id is required")
-        return self.sharepoint_repository.upsert(
+        values = dict(
             azure_tenant_id=request.azure_tenant_id.strip(),
             client_id=request.client_id.strip(),
             client_secret=request.client_secret,
@@ -52,6 +65,9 @@ class ManageStorageSettingsUseCase:
             drive_id=request.drive_id.strip(),
             folder_path=request.folder_path.strip(),
         )
+        config = self.sharepoint_repository.upsert(**values)
+        connection = self.sharepoint_connection_checker.check(**values)
+        return config, connection
 
     def get_sharepoint(self):
         return self.sharepoint_repository.get()

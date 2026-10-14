@@ -2,6 +2,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from app.application.dto.connection import ConnectionCheckResponse
+
 
 class S3StorageUpsertRequest(BaseModel):
     bucket_name: str = Field(
@@ -43,6 +45,13 @@ class S3StorageUpsertRequest(BaseModel):
 
 class S3StorageResponse(BaseModel):
     id: int = Field(..., description="ID de la configuracion.", examples=[1])
+    connection: Optional[ConnectionCheckResponse] = Field(
+        None,
+        description=(
+            "Resultado de validar la conexion al guardar. Solo viene en la respuesta del PUT; "
+            "un fallo no impide que la configuracion quede guardada."
+        ),
+    )
     bucket_name: str = Field(..., description="Nombre del bucket configurado.")
     region: str = Field(..., description="Region de AWS del bucket.")
     access_key_id: str = Field(..., description="Access Key ID configurado.")
@@ -101,6 +110,13 @@ class SharePointStorageUpsertRequest(BaseModel):
 
 class SharePointStorageResponse(BaseModel):
     id: int = Field(..., description="ID de la configuracion.", examples=[1])
+    connection: Optional[ConnectionCheckResponse] = Field(
+        None,
+        description=(
+            "Resultado de validar la conexion al guardar. Solo viene en la respuesta del PUT; "
+            "un fallo no impide que la configuracion quede guardada."
+        ),
+    )
     azure_tenant_id: str = Field(..., description="Tenant ID de Azure AD configurado.")
     client_id: str = Field(..., description="Client ID de la app registrada.")
     site_id: str = Field(..., description="ID del sitio de SharePoint configurado.")

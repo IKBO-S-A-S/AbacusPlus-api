@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from app.application.dto.connection import ConnectionCheckResponse
 from app.application.dto.storage import (
     DocumentNamingResponse,
     DocumentNamingUpsertRequest,
@@ -22,16 +23,25 @@ router = APIRouter()
     description=(
         "Crea o actualiza la configuracion de S3 del tenant. Solo existe una fila por tenant: "
         "cada llamada reemplaza la configuracion anterior. `secret_access_key` se cifra antes "
-        "de persistir y nunca se retorna en la respuesta."
+        "de persistir y nunca se retorna en la respuesta.\n\n"
+        "Tras guardar se valida la conexion (acceso al bucket y escritura de un objeto de "
+        "prueba que se borra de inmediato). El resultado viaja en `connection`; un fallo "
+        "**no** impide guardar, solo avisa al usuario de que la conexion no es correcta."
     ),
-    response_description="Configuracion de S3 registrada sin exponer el secret access key.",
+    response_description=(
+        "Configuracion de S3 registrada sin exponer el secret access key, mas el resultado "
+        "de la validacion de conexion en `connection`."
+    ),
     responses={400: {"description": "Payload invalido o bucket_name vacio."}},
 )
 def upsert_s3_storage(
     request: S3StorageUpsertRequest,
     use_case: ManageStorageSettingsUseCase = Depends(get_storage_settings_use_case),
 ) -> S3StorageResponse:
-    return use_case.upsert_s3(request)
+    config, connection = use_case.upsert_s3(request)
+    response = S3StorageResponse.model_validate(config)
+    response.connection = ConnectionCheckResponse(ok=connection.ok, message=connection.message)
+    return response
 
 
 @router.get(
@@ -61,16 +71,25 @@ def get_s3_storage(
         "Crea o actualiza la configuracion de SharePoint del tenant (autenticacion app-only "
         "via Microsoft Graph). Solo existe una fila por tenant: cada llamada reemplaza la "
         "configuracion anterior. `client_secret` se cifra antes de persistir y nunca se "
-        "retorna en la respuesta."
+        "retorna en la respuesta.\n\n"
+        "Tras guardar se valida la conexion (token de Microsoft y escritura de un archivo de "
+        "prueba que se borra de inmediato). El resultado viaja en `connection`; un fallo "
+        "**no** impide guardar, solo avisa al usuario de que la conexion no es correcta."
     ),
-    response_description="Configuracion de SharePoint registrada sin exponer el client secret.",
+    response_description=(
+        "Configuracion de SharePoint registrada sin exponer el client secret, mas el "
+        "resultado de la validacion de conexion en `connection`."
+    ),
     responses={400: {"description": "Payload invalido o site_id vacio."}},
 )
 def upsert_sharepoint_storage(
     request: SharePointStorageUpsertRequest,
     use_case: ManageStorageSettingsUseCase = Depends(get_storage_settings_use_case),
 ) -> SharePointStorageResponse:
-    return use_case.upsert_sharepoint(request)
+    config, connection = use_case.upsert_sharepoint(request)
+    response = SharePointStorageResponse.model_validate(config)
+    response.connection = ConnectionCheckResponse(ok=connection.ok, message=connection.message)
+    return response
 
 
 @router.get(
