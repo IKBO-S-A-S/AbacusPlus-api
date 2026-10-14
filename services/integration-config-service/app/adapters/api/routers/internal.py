@@ -228,6 +228,8 @@ def _migrate_tenant_db(engine) -> None:
         # NIT de la empresa. `create_all` no agrega columnas a una tabla existente; en una base
         # ya creada queda al final (Postgres no reordena), en una nueva queda tras `id`.
         "ALTER TABLE tenant_fiscal_profile ADD COLUMN IF NOT EXISTS nit VARCHAR(20)",
+        # Razón social de la empresa (mismo motivo: `create_all` no agrega columnas).
+        "ALTER TABLE tenant_fiscal_profile ADD COLUMN IF NOT EXISTS razon_social VARCHAR(255)",
     ]
 
     with engine.connect() as conn:

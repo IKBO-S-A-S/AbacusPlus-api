@@ -22,6 +22,9 @@ class TenantFiscalProfile(Base):
     # compararlo tal cual con el NIT del receptor de la factura. Nullable: los perfiles
     # existentes no lo tienen hasta que el contador lo diligencie.
     nit = Column(String(20), nullable=True)
+    # Razón social: nombre legal de la empresa. Nullable: los perfiles existentes no lo tienen
+    # hasta que el contador lo diligencie.
+    razon_social = Column(String(255), nullable=True)
     # ── Condición como AGENTE de retención (define si la empresa retiene) ──
     agente_retencion_renta = Column(Boolean, nullable=False, default=False)
     agente_retencion_ica = Column(Boolean, nullable=False, default=False)

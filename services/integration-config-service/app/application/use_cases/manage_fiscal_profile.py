@@ -11,6 +11,7 @@ from app.infrastructure.persistence.repositories.tenant_fiscal_profile_repositor
 # asume que retiene.
 _DEFAULT = FiscalProfileResponse(
     nit=None,
+    razon_social=None,
     agente_retencion_renta=False,
     agente_retencion_ica=False,
     agente_retencion_iva=False,

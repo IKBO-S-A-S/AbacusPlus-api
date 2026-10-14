@@ -11,6 +11,11 @@ class FiscalProfileResponse(BaseModel):
         description="NIT de la empresa: solo dígitos, sin puntos, guiones ni dígito de verificación.",
         examples=["900031352"],
     )
+    razon_social: Optional[str] = Field(
+        None,
+        description="Razón social: nombre legal de la empresa.",
+        examples=["Agroindustrial Ejemplo S.A.S."],
+    )
     agente_retencion_renta: bool = Field(
         ..., description="La empresa es agente de retención en la fuente (renta / ReteFuente)."
     )
@@ -44,6 +49,12 @@ class FiscalProfileUpsertRequest(BaseModel):
             return str(value)
         return value
 
+    razon_social: Optional[str] = Field(
+        default=None,
+        description="Razón social: nombre legal de la empresa (hasta 255 caracteres).",
+        max_length=255,
+        examples=["Agroindustrial Ejemplo S.A.S."],
+    )
     agente_retencion_renta: bool = False
     agente_retencion_ica: bool = False
     agente_retencion_iva: bool = False
@@ -61,6 +72,7 @@ class FiscalProfileUpsertRequest(BaseModel):
         "json_schema_extra": {
             "example": {
                 "nit": "900031352",
+                "razon_social": "Agroindustrial Ejemplo S.A.S.",
                 "agente_retencion_renta": True,
                 "agente_retencion_ica": True,
                 "agente_retencion_iva": False,
