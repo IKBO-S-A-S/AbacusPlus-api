@@ -3,6 +3,8 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field, HttpUrl
 
+from app.application.dto.connection import ConnectionCheckResponse
+
 
 class CredentialUpsertRequest(BaseModel):
     provider: str = Field(..., description="Proveedor de integracion.", examples=["siigo"])
@@ -81,5 +83,13 @@ class CredentialResponse(BaseModel):
     )
     extra_config: dict[str, Any] = Field(..., description="Configuracion adicional no sensible.")
     active: bool = Field(..., description="Indica si la credencial esta activa.", examples=[True])
+    connection: Optional[ConnectionCheckResponse] = Field(
+        None,
+        description=(
+            "Resultado de validar la conexion al guardar. Solo viene en la respuesta del PUT y "
+            "solo para proveedores que se pueden validar (hoy SIIGO); un fallo no impide que "
+            "la credencial quede guardada."
+        ),
+    )
 
     model_config = {"from_attributes": True}

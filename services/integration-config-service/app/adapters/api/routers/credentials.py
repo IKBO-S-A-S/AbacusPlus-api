@@ -2,6 +2,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, status
 
+from app.application.dto.connection import ConnectionCheckResponse
 from app.application.dto.integration import CredentialResponse, CredentialUpsertRequest
 from app.application.use_cases.manage_credentials import ManageCredentialsUseCase
 from app.dependencies import get_credentials_use_case
@@ -20,16 +21,27 @@ router = APIRouter()
         "Crea o actualiza credenciales en la tabla generica `integration_credentials`.\n\n"
         "Este endpoint es agnostico al proveedor: puede almacenar SIIGO, Odoo, Alegra "
         "u otras plataformas futuras usando `provider`, `account_key`, `auth_scheme` "
-        "y `extra_config` para parametros propios de cada adaptador."
+        "y `extra_config` para parametros propios de cada adaptador.\n\n"
+        "Para `provider=siigo`, tras guardar se valida la conexion autenticando contra SIIGO. "
+        "El resultado viaja en `connection`; un fallo **no** impide guardar, solo avisa al "
+        "usuario de que las credenciales no funcionan. Otros proveedores no se validan "
+        "(`connection` queda en `null`)."
     ),
-    response_description="Credencial registrada sin exponer secretos.",
+    response_description=(
+        "Credencial registrada sin exponer secretos y, para SIIGO, el resultado de la "
+        "validacion de conexion en `connection`."
+    ),
     responses={400: {"description": "Payload invalido o proveedor vacio."}},
 )
 def upsert_credentials(
     request: CredentialUpsertRequest,
     use_case: ManageCredentialsUseCase = Depends(get_credentials_use_case),
 ) -> CredentialResponse:
-    return use_case.upsert(request)
+    credential, connection = use_case.upsert(request)
+    response = CredentialResponse.model_validate(credential)
+    if connection is not None:
+        response.connection = ConnectionCheckResponse(ok=connection.ok, message=connection.message)
+    return response
 
 
 @router.get(
