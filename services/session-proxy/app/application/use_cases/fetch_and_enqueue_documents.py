@@ -1,11 +1,18 @@
 import logging
+import os
+import re
 import uuid
 from datetime import datetime, timezone
+from urllib.parse import unquote
 
 from app.application.dto.documents import DocumentsRangeRequest, EnqueueDownloadsResponse
-from app.domain.exceptions.base import NoDocumentsFoundException
+from app.domain.exceptions.base import (
+    FiscalNitNotConfiguredException,
+    NoDocumentsFoundException,
+    RkNitMismatchException,
+)
 from app.domain.ports.queue import JobQueuePort
-from app.domain.ports.services import ExternalClientPort
+from app.domain.ports.services import ExternalClientPort, FiscalProfilePort
 from app.infrastructure.queue.batch_store import RedisBatchStore
 from app.infrastructure.queue.job_progress_store import JobProgressStore
 
@@ -25,7 +32,9 @@ class FetchAndEnqueueDocumentsUseCase:
         login_url: str,
         batch_store: RedisBatchStore,
         job_progress_store: JobProgressStore,
+        fiscal_profile: FiscalProfilePort,
     ):
+        self._fiscal_profile = fiscal_profile
         self._client = external_client
         self._queue = job_queue
         self._base_url = base_url.rstrip("/")
@@ -33,9 +42,32 @@ class FetchAndEnqueueDocumentsUseCase:
         self._batch_store = batch_store
         self._progress = job_progress_store
 
+    @staticmethod
+    def _digits(value: str) -> str:
+        return re.sub(r"\D", "", unquote(value or ""))
+
+    async def _validate_rk_matches_fiscal_nit(self, request: DocumentsRangeRequest, tenant_slug: str):
+        """El `rk` del enlace DIAN es el NIT de la empresa; debe ser el del perfil fiscal.
+
+        Sin esta comprobación un enlace de otra empresa descargaría sus documentos hacia la
+        base de este tenant. Se hace antes de tocar la DIAN. Se comparan solo los dígitos para
+        no depender de cómo venga escrito. Usa el mismo `rk` efectivo que luego se envía a la
+        DIAN (el del enlace o, si viene vacío, `EXTERNAL_FIXED_RK`).
+        """
+        registered = self._digits(await self._fiscal_profile.get_nit(tenant_slug) or "")
+        if not registered:
+            raise FiscalNitNotConfiguredException()
+        link_rk = self._digits(request.rk or os.getenv("EXTERNAL_FIXED_RK", ""))
+        if link_rk != registered:
+            logger.warning(
+                "rk del enlace no coincide con el NIT del perfil fiscal (tenant=%s)", tenant_slug
+            )
+            raise RkNitMismatchException()
+
     async def execute(
         self, request: DocumentsRangeRequest, tenant_slug: str = ""
     ) -> EnqueueDownloadsResponse:
+        await self._validate_rk_matches_fiscal_nit(request, tenant_slug)
         batch_id = str(uuid.uuid4())
         started_at = datetime.now(timezone.utc)
 

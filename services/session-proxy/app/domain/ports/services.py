@@ -2,6 +2,13 @@ from abc import ABC, abstractmethod
 from typing import Any, Optional
 
 
+class FiscalProfilePort(ABC):
+    @abstractmethod
+    async def get_nit(self, tenant_slug: str) -> Optional[str]:
+        """NIT registrado en el perfil fiscal del tenant, o None si aún no lo tiene."""
+        ...
+
+
 class ExternalClientPort(ABC):
     @abstractmethod
     async def login(self, login_url: str, credentials: dict[str, Any]) -> dict[str, str]:

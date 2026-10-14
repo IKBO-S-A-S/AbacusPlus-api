@@ -42,6 +42,25 @@ class ExternalRequestException(DomainException):
         super().__init__(message=message, code="EXTERNAL_REQUEST_ERROR")
 
 
+class RkNitMismatchException(DomainException):
+    def __init__(self):
+        super().__init__(
+            message="El enlace no corresponde al NIT registrado en el perfil fiscal de la empresa.",
+            code="RK_NIT_MISMATCH",
+        )
+
+
+class FiscalNitNotConfiguredException(DomainException):
+    def __init__(self):
+        super().__init__(
+            message=(
+                "La empresa no tiene NIT registrado en el perfil fiscal. "
+                "Regístrelo antes de descargar documentos de la DIAN."
+            ),
+            code="FISCAL_NIT_NOT_CONFIGURED",
+        )
+
+
 class NoDocumentsFoundException(DomainException):
     def __init__(self, start_date: str, end_date: str):
         super().__init__(

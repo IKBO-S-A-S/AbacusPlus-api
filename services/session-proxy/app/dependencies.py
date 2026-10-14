@@ -10,6 +10,7 @@ from app.application.use_cases.login import LoginUseCase
 from app.application.use_cases.proxy_request import ProxyRequestUseCase
 from app.infrastructure.browser.playwright_client import PlaywrightBrowserClient
 from app.infrastructure.clients.external_client import HttpxExternalClient
+from app.infrastructure.clients.fiscal_profile_client import HttpFiscalProfileClient
 from app.infrastructure.queue.arq_queue import ArqJobQueue
 from app.infrastructure.queue.batch_store import RedisBatchStore
 from app.infrastructure.queue.job_progress_store import JobProgressStore
@@ -88,6 +89,7 @@ def get_fetch_and_enqueue_use_case() -> FetchAndEnqueueDocumentsUseCase:
         login_url=_build_login_url(),
         batch_store=get_batch_store(),
         job_progress_store=get_job_progress_store(),
+        fiscal_profile=HttpFiscalProfileClient(),
     )
 
 
