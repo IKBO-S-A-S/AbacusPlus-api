@@ -22,6 +22,8 @@ class DocumentsRangeRequest(BaseModel):
     SerieAndNumber: str = ""
     SenderCode: str = ""
     ReceiverCode: str = ""
+    # Sin SearchRequested=true la DIAN responde 0 registros aunque haya documentos.
+    SearchRequested: bool = True
     DocumentTypeId: str = "00"
     Status: str = "0"
     IsNextPage: bool = False
