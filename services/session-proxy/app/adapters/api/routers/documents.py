@@ -14,7 +14,11 @@ from app.dependencies import (
     get_fetch_and_enqueue_use_case,
     get_job_status_use_case,
 )
-from app.domain.exceptions.base import ExternalAuthException, ExternalRequestException
+from app.domain.exceptions.base import (
+    ExternalAuthException,
+    ExternalRequestException,
+    NoDocumentsFoundException,
+)
 from app.infrastructure.config.auth_dependency import TokenData, get_token_data, require_write
 
 router = APIRouter(dependencies=[Depends(get_token_data)])
@@ -33,6 +37,11 @@ router = APIRouter(dependencies=[Depends(get_token_data)])
         "`GET /api/v1/dian/documents/batches/{batch_id}` para monitorear el progreso."
     ),
     response_description="Batch creado con su ID, cantidad de jobs encolados y hora de inicio.",
+    responses={
+        401: {"description": "Token DIAN inválido o vencido."},
+        404: {"description": "La DIAN no devolvió documentos para el rango; no se crea ningún batch."},
+        502: {"description": "Fallo al consultar el portal DIAN."},
+    },
 )
 async def enqueue_document_downloads(
     request: DocumentsRangeRequest,
@@ -41,6 +50,8 @@ async def enqueue_document_downloads(
 ):
     try:
         return await use_case.execute(request, token.tenant_slug)
+    except NoDocumentsFoundException as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e.message)
     except ExternalAuthException as e:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=e.message)
     except ExternalRequestException as e:

@@ -40,3 +40,14 @@ class BrowserLoginException(DomainException):
 class ExternalRequestException(DomainException):
     def __init__(self, message: str):
         super().__init__(message=message, code="EXTERNAL_REQUEST_ERROR")
+
+
+class NoDocumentsFoundException(DomainException):
+    def __init__(self, start_date: str, end_date: str):
+        super().__init__(
+            message=(
+                f"La DIAN no devolvió documentos para el rango {start_date} a {end_date}. "
+                "Verifique las fechas y que el token corresponda a la empresa correcta."
+            ),
+            code="NO_DOCUMENTS_FOUND",
+        )

@@ -3,6 +3,7 @@ import uuid
 from datetime import datetime, timezone
 
 from app.application.dto.documents import DocumentsRangeRequest, EnqueueDownloadsResponse
+from app.domain.exceptions.base import NoDocumentsFoundException
 from app.domain.ports.queue import JobQueuePort
 from app.domain.ports.services import ExternalClientPort
 from app.infrastructure.queue.batch_store import RedisBatchStore
@@ -61,9 +62,11 @@ class FetchAndEnqueueDocumentsUseCase:
             request.EndDate,
             len(raw_docs),
         )
-        if raw_docs:
-            logger.info("Claves del primer documento: %s", list(raw_docs[0].keys()))
-            logger.info("Primer documento (crudo): %s", raw_docs[0])
+        if not raw_docs:
+            raise NoDocumentsFoundException(request.StartDate, request.EndDate)
+
+        logger.info("Claves del primer documento: %s", list(raw_docs[0].keys()))
+        logger.info("Primer documento (crudo): %s", raw_docs[0])
 
         # El progreso se lleva por trackId (clave = track_id). El endpoint de estado
         # itera estos "job_ids" lógicos; el job ARQ real que descarga el lote es uno solo.
