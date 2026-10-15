@@ -14,6 +14,7 @@ import contextlib
 import logging
 import os
 import shutil
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,10 +27,33 @@ from app.infrastructure.browser.playwright_client import (
     is_valid_zip,
 )
 from app.infrastructure.config.logging import setup_logging
+from app.infrastructure.metrics import log_metric, timed
 from app.infrastructure.queue.job_progress_store import JobProgressStore
 
 setup_logging()
 logger = logging.getLogger(__name__)
+
+
+def _log_doc_metric(
+    batch_id: str, track_id: str, outcome: str, started: float, timings: dict, zip_bytes: int = 0
+) -> None:
+    """Una línea por documento con el desglose de tiempos de su descarga."""
+    log_metric(
+        "doc_download",
+        batch=batch_id,
+        track=track_id[:16],
+        outcome=outcome,
+        total_ms=round((time.perf_counter() - started) * 1000),
+        turnstile_ms=timings.get("turnstile_ms", 0),
+        nav_ms=timings.get("nav_ms", 0),
+        fetch_ms=timings.get("fetch_ms", 0),
+        backoff_ms=timings.get("backoff_ms", 0),
+        save_ms=timings.get("save_ms", 0),
+        notify_ms=timings.get("notify_ms", 0),
+        attempts=timings.get("attempts", 0),
+        path=timings.get("path"),
+        zip_bytes=zip_bytes,
+    )
 
 
 def _build_login_url() -> str:
@@ -142,10 +166,13 @@ async def download_batch(
     logger.info("Iniciando batch %s — %d documentos", batch_id, len(track_ids))
     downloaded = 0
     failed = 0
+    batch_started = time.perf_counter()
+    open_timings: dict = {}
 
     try:
         session = BrowserDownloadSession(auth_url, timeout=timeout_ms, max_retries=max_retries)
-        await session.open()
+        with timed("open_ms", open_timings):
+            await session.open()
     except DianDownloadError as e:
         logger.error("Batch %s ABORTADO — auth fallida: %s", batch_id, e)
         for track_id in track_ids:
@@ -174,10 +201,13 @@ async def download_batch(
     try:
         for track_id in track_ids:
             track_id = str(track_id)
+            doc_started = time.perf_counter()
+            timings: dict = {}
             try:
-                content = await session.download(track_id)
+                content = await session.download(track_id, timings=timings)
             except DianDownloadError as e:
                 logger.warning("Documento %s no descargable: %s", track_id, e)
+                _log_doc_metric(batch_id, track_id, e.kind, doc_started, timings)
                 # `e.kind` ya trae el motivo específico (DIAN_INVALID, AUTH_LOST,
                 # FETCH_ERROR, CLOUDFLARE, AZURE_WAF...) — antes se perdía al convertir la
                 # excepción en texto plano, dejando al usuario sin forma de distinguir un
@@ -223,6 +253,7 @@ async def download_batch(
                 continue
             except Exception as e:
                 logger.error("Error inesperado descargando %s: %s", track_id, e)
+                _log_doc_metric(batch_id, track_id, type(e).__name__, doc_started, timings)
                 await _mark_failed(
                     progress, track_id, f"{type(e).__name__}: {e}", error_code=type(e).__name__
                 )
@@ -232,21 +263,36 @@ async def download_batch(
             if not is_valid_zip(content):
                 msg = "Contenido descargado no es un ZIP válido (firma PK ausente)"
                 logger.warning("Documento %s: %s", track_id, msg)
+                _log_doc_metric(batch_id, track_id, "INVALID_ZIP", doc_started, timings)
                 await _mark_failed(progress, track_id, msg, error_code="INVALID_ZIP")
                 failed += 1
                 continue
 
             filename = f"{track_id}.zip"
             file_path = downloads_dir / filename
-            file_path.write_bytes(content)
+            with timed("save_ms", timings):
+                file_path.write_bytes(content)
             logger.info("ZIP guardado: %s (%d bytes)", file_path, len(content))
 
             await _mark_downloaded(progress, track_id)
-            await _trigger_xml_processing(filename, track_id, tenant_slug)
+            with timed("notify_ms", timings):
+                await _trigger_xml_processing(filename, track_id, tenant_slug)
             downloaded += 1
+            _log_doc_metric(batch_id, track_id, "ok", doc_started, timings, len(content))
     finally:
         await session.close()
 
+    batch_ms = round((time.perf_counter() - batch_started) * 1000)
+    log_metric(
+        "batch_download",
+        batch=batch_id,
+        docs=len(track_ids),
+        ok=downloaded,
+        failed=failed,
+        open_ms=open_timings.get("open_ms", 0),
+        total_ms=batch_ms,
+        avg_ms_per_doc=round(batch_ms / len(track_ids)) if track_ids else 0,
+    )
     logger.info("Batch %s terminado — descargados: %d, fallidos: %d", batch_id, downloaded, failed)
     return {
         "batch_id": batch_id,

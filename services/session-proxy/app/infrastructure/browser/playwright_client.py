@@ -3,6 +3,7 @@ import base64
 import contextlib
 import logging
 import os
+from typing import Optional
 from urllib.parse import parse_qs, quote, urlparse
 
 import httpx
@@ -14,6 +15,7 @@ import httpx
 from patchright.async_api import async_playwright
 
 from app.domain.exceptions.base import BrowserLoginException
+from app.infrastructure.metrics import timed
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,10 @@ _ZIP_MAGICS = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
 def is_valid_zip(data: bytes) -> bool:
     """True si los primeros bytes corresponden a la firma de un archivo ZIP."""
     return len(data) >= 4 and data[:4] in _ZIP_MAGICS
+
+
+# Fallos seguidos del camino rápido tras los cuales se desactiva en la sesión.
+_FAST_PATH_MAX_FAILURES = 2
 
 
 class PlaywrightBrowserClient:
@@ -282,6 +288,15 @@ class BrowserDownloadSession:
         self._page = None
         # None = no probado; True/False = si el solver in-browser funciona en este entorno.
         self._inbrowser_works = None
+        # Camino rápido de descarga (ver `download`): fetch directo con el primer token.
+        # `_fast_primed` pasa a True cuando el flujo completo (navegación + fetch) logró bajar
+        # un ZIP en esta sesión, señal de que cookies y WAF ya están en orden. Tras
+        # `_FAST_PATH_MAX_FAILURES` fallos seguidos se desactiva para el resto de la sesión:
+        # si en este entorno el fetch directo no funciona, no debe costar un token extra
+        # por documento.
+        self._fast_enabled = os.getenv("DOWNLOAD_FAST_PATH", "true").lower() != "false"
+        self._fast_primed = False
+        self._fast_failures = 0
 
     async def __aenter__(self) -> "BrowserDownloadSession":
         await self.open()
@@ -472,9 +487,12 @@ class BrowserDownloadSession:
                 await self._pw.stop()
 
     # ── Descarga adaptativa ────────────────────────────────────────────────
-    async def download(self, track_id: str) -> bytes:
+    async def download(self, track_id: str, timings: Optional[dict] = None) -> bytes:
         """
         Descarga el ZIP de un documento.
+
+        `timings`, si se pasa, acumula los ms por etapa (turnstile, nav, fetch, backoff) y
+        el número de intentos, para las métricas del worker.
 
         El endpoint DownloadZipFiles exige un token Cloudflare Turnstile en el param
         `captcha`. Por cada intento:
@@ -484,12 +502,31 @@ class BrowserDownloadSession:
           3. Valida firma ZIP. Un token es de un solo uso, así que cada reintento pide
              uno nuevo.
 
+        Camino rápido: medido en producción, la navegación nunca devolvió el ZIP (en 7 de 7
+        documentos lo trajo el fetch del paso siguiente), así que cada documento pagaba una
+        navegación y un token Turnstile de más. Una vez que el flujo completo demostró
+        funcionar en la sesión (`_fast_primed`), los siguientes documentos van directo a fetch
+        con el primer token. Si el fetch directo falla, el MISMO intento continúa con el flujo
+        completo, así que el peor caso es un fetch y un token de más, nunca un documento
+        perdido; y tras `_FAST_PATH_MAX_FAILURES` fallos seguidos el camino se apaga.
+        `timings["path"]` registra cuál se usó (`fast` o `full`).
+
         Lanza DianDownloadError si el documento no está disponible o se agotan intentos.
         """
         last_reason = "sin intentos"
 
         for attempt in range(1, self._max_retries + 1):
-            token = await self._solve_turnstile()
+            if timings is not None:
+                timings["attempts"] = attempt
+                timings["path"] = "full"
+
+            if self._fast_enabled and self._fast_primed:
+                data = await self._try_fast_path(track_id, timings)
+                if data is not None:
+                    return data
+
+            with timed("turnstile_ms", timings):
+                token = await self._solve_turnstile()
             if not token:
                 last_reason = "SIN_TOKEN_TURNSTILE"
                 logger.warning(
@@ -498,7 +535,8 @@ class BrowserDownloadSession:
                     self._max_retries,
                     track_id,
                 )
-                await asyncio.sleep(2**attempt)
+                with timed("backoff_ms", timings):
+                    await asyncio.sleep(2**attempt)
                 continue
 
             download_url = (
@@ -510,9 +548,11 @@ class BrowserDownloadSession:
             # El browser ejecuta el JS challenge de Azure WAF, la cookie WAF queda fijada,
             # y Azure WAF hace redirect al URL original (captcha intacto) donde DIAN
             # valida el token Turnstile y envía el ZIP como Content-Disposition attachment.
-            data, kind = await self._strategy_nav_download(download_url)
+            with timed("nav_ms", timings):
+                data, kind = await self._strategy_nav_download(download_url)
             if kind == VALID_ZIP and is_valid_zip(data):
                 logger.info("[Session] ZIP via nav: %d bytes (trackId=%.32s…)", len(data), track_id)
+                self._fast_primed = True
                 return data
 
             if kind == AUTH_LOST:
@@ -521,20 +561,23 @@ class BrowserDownloadSession:
             # Estrategia 2: inpage fetch con token fresco.
             # La navegación anterior fijó la cookie WAF en el contexto del browser;
             # el fetch ahora puede pasar Azure WAF y llegar a DIAN con el captcha.
-            token2 = await self._solve_turnstile()
+            with timed("turnstile_ms", timings):
+                token2 = await self._solve_turnstile()
             if token2:
                 download_url2 = (
                     f"{self._base_url}/Document/DownloadZipFiles"
                     f"?trackId={track_id}&captcha={quote(token2, safe='')}"
                 )
                 try:
-                    data2, kind2 = await self._strategy_inpage_fetch(download_url2)
+                    with timed("fetch_ms", timings):
+                        data2, kind2 = await self._strategy_inpage_fetch(download_url2)
                     if kind2 == VALID_ZIP and is_valid_zip(data2):
                         logger.info(
                             "[Session] ZIP via fetch (post-nav): %d bytes (trackId=%.32s…)",
                             len(data2),
                             track_id,
                         )
+                        self._fast_primed = True
                         return data2
                     last_reason = kind2
                 except Exception as e:
@@ -563,13 +606,61 @@ class BrowserDownloadSession:
                 last_reason,
                 track_id,
             )
-            await asyncio.sleep(2**attempt)
+            with timed("backoff_ms", timings):
+                await asyncio.sleep(2**attempt)
 
         raise DianDownloadError(
             f"Descarga fallida tras {self._max_retries} intentos "
             f"(último: {last_reason}) trackId={track_id}",
             last_reason,
         )
+
+    async def _try_fast_path(self, track_id: str, timings: Optional[dict]) -> Optional[bytes]:
+        """Fetch directo con un token fresco. Devuelve el ZIP, o None para seguir al flujo completo.
+
+        Nunca lanza: cualquier fallo (sin token, WAF, página cerrada, respuesta no-ZIP) se
+        traduce en None y en un fallo contado para el corte de la sesión. Es el flujo completo
+        el que decide qué error definitivo se informa.
+        """
+        try:
+            with timed("turnstile_ms", timings):
+                token = await self._solve_turnstile()
+            if token:
+                url = (
+                    f"{self._base_url}/Document/DownloadZipFiles"
+                    f"?trackId={track_id}&captcha={quote(token, safe='')}"
+                )
+                with timed("fetch_ms", timings):
+                    data, kind = await self._strategy_inpage_fetch(url)
+                if kind == VALID_ZIP and is_valid_zip(data):
+                    self._fast_failures = 0
+                    if timings is not None:
+                        timings["path"] = "fast"
+                    logger.info(
+                        "[Session] ZIP via fetch directo: %d bytes (trackId=%.32s…)",
+                        len(data),
+                        track_id,
+                    )
+                    return data
+                reason = kind
+            else:
+                reason = "SIN_TOKEN_TURNSTILE"
+        except Exception as e:
+            reason = type(e).__name__
+            logger.warning("[Session] camino rápido error: %s", e)
+
+        self._fast_failures += 1
+        self._fast_primed = False  # el flujo completo vuelve a "cebar" la sesión
+        if self._fast_failures >= _FAST_PATH_MAX_FAILURES:
+            self._fast_enabled = False
+            logger.warning(
+                "[Session] camino rápido desactivado tras %d fallos seguidos (último: %s)",
+                self._fast_failures,
+                reason,
+            )
+        else:
+            logger.info("[Session] camino rápido sin ZIP (%s) — se usa el flujo completo", reason)
+        return None
 
     # ── Resolución de Turnstile (token del param captcha) ──────────────────
     async def _solve_turnstile(self):
