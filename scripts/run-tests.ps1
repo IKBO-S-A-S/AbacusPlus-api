@@ -19,14 +19,13 @@ Run-Step "Starting shared dependencies" {
 }
 
 Run-Step "Building service images (ensures config files are included)" {
-  docker compose build xml-processor rag-service llm-service session-proxy odoo-service
+  docker compose build xml-processor rag-service llm-service session-proxy
 }
 
 Run-ComposeTest "xml-processor"
 Run-ComposeTest "rag-service"
 Run-ComposeTest "llm-service"
 Run-ComposeTest "session-proxy"
-Run-ComposeTest "odoo-service"
 
 Run-Step "All tests passed" {
   Write-Host "OK" -ForegroundColor Green

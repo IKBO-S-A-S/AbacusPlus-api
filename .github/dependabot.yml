@@ -31,12 +31,6 @@ updates:
     labels: [dependencies, session-proxy]
 
   - package-ecosystem: pip
-    directory: /services/odoo-service
-    schedule:
-      interval: monthly
-    labels: [dependencies, odoo-service]
-
-  - package-ecosystem: pip
     directory: /services/siigo-service
     schedule:
       interval: monthly

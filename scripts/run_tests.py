@@ -27,7 +27,6 @@ SERVICES = [
     "llm-service",
     "auth-service",
     "integration-config-service",
-    "odoo-service",
     "session-proxy",
     "siigo-service",
 ]

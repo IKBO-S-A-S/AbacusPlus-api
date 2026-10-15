@@ -25,7 +25,6 @@ Checks que deben pasar (agregarlos uno a uno en el buscador):
 02 - Security / pip-audit (rag-service)
 02 - Security / pip-audit (llm-service)
 02 - Security / pip-audit (session-proxy)
-02 - Security / pip-audit (odoo-service)
 02 - Security / pip-audit (siigo-service)
 02 - Security / pip-audit (integration-config-service)
 02 - Security / pip-audit (auth-service)

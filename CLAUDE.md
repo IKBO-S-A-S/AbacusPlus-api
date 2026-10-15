@@ -60,9 +60,6 @@ Cliente
                    │
                    ├─ POST /api/v1/chunks     ──►  rag-service :8002  (debug/admin)
                    │
-                   ├─ GET|POST /api/v1/odoo   ──►  odoo-service :8005
-                   │                                (sync facturas compra, asientos)
-                   │
                    ├─ GET|POST /api/v1/siigo  ──►  siigo-service :8006
                    │                                (credenciales, plan de cuentas,
                    │                                 factura de compra · RF-05)
@@ -143,19 +140,6 @@ api/
 │   │   │       ├── browser/            playwright_client.py
 │   │   │       ├── config/             settings.py
 │   │   │       └── workers/            download_worker.py  ← arq worker
-│   │   ├── tests/
-│   │   ├── Dockerfile
-│   │   └── requirements.txt
-│   │
-│   ├── odoo-service/           # Puerto 8005
-│   │   ├── app/
-│   │   │   ├── adapters/api/routers/   odoo.py
-│   │   │   ├── application/use_cases/  sync_invoices.py · match_entries.py
-│   │   │   ├── domain/                 entities/ · ports/
-│   │   │   └── infrastructure/
-│   │   │       ├── clients/            odoo_client.py
-│   │   │       ├── config/             database.py
-│   │   │       └── persistence/        models/ · repositories/
 │   │   ├── tests/
 │   │   ├── Dockerfile
 │   │   └── requirements.txt
@@ -337,8 +321,6 @@ xml-processor reconstruye el estado correcto: indexa los contabilizados y retira
 | PATCH| `/api/v1/accounting/*` | llm-service |
 | POST | `/api/v1/chunks` | rag-service |
 | POST | `/api/v1/chunks/search` | rag-service |
-| GET  | `/api/v1/odoo/*` | odoo-service |
-| POST | `/api/v1/odoo/*` | odoo-service |
 | GET  | `/api/v1/siigo/*` | siigo-service |
 | POST | `/api/v1/siigo/*` | siigo-service |
 | GET  | `/api/v1/integrations/*` | integration-config-service |
@@ -353,7 +335,6 @@ xml-processor reconstruye el estado correcto: indexa los contabilizados y retira
 | GET  | `/health/rag-service` | rag-service |
 | GET  | `/health/llm-service` | llm-service |
 | GET  | `/health/session-proxy` | session-proxy |
-| GET  | `/health/odoo-service` | odoo-service |
 | GET  | `/health/siigo-service` | siigo-service |
 | GET  | `/health/integration-config-service` | integration-config-service |
 
@@ -424,16 +405,6 @@ xml-processor reconstruye el estado correcto: indexa los contabilizados y retira
 | GET  | `/api/v1/dian/documents/batches/{batch_id}` | Estado del lote de descarga |
 | GET  | `/api/v1/dian/documents/jobs/{job_id}` | Estado de un job individual |
 | POST | `/api/v1/proxy/request` | Reenvía request HTTP al portal externo |
-| GET  | `/health` | Health check |
-
-### odoo-service (:8005) — interno
-| Método | Path | Descripción |
-|--------|------|-------------|
-| POST | `/api/v1/odoo/syncs` | Sincroniza facturas de compra desde Odoo |
-| GET  | `/api/v1/odoo/entries` | Lista asientos locales (filtros: fecha, tipo, estado) |
-| POST | `/api/v1/odoo/entry-matches` | Vincula asientos Odoo con documentos DIAN |
-| GET  | `/api/v1/odoo/entries/document/{document_id}` | Último asiento vinculado a documento |
-| GET  | `/api/v1/odoo/entries/{entry_id}` | Detalle de asiento con líneas |
 | GET  | `/health` | Health check |
 
 ### siigo-service (:8006) — interno
@@ -550,12 +521,6 @@ RAG_SERVICE_URL=http://rag-service:8002
 LLM_SERVICE_URL=http://llm-service:8003
 XML_PROCESSOR_URL=http://xml-processor:8001
 
-# Odoo (odoo-service)
-ODOO_URL=http://localhost:8069
-ODOO_DB=odoo
-ODOO_USER=admin
-ODOO_PASSWORD=admin
-
 # SIIGO (siigo-service)
 SIIGO_BASE_URL=https://api.siigo.com
 SIIGO_CHART_ACCOUNTS_PATH=/v1/accounts
@@ -649,7 +614,6 @@ Los specs OpenAPI de cada servicio también se exponen en el gateway:
 - `http://localhost:8000/openapi/llm-service.json`
 - `http://localhost:8000/openapi/rag-service.json`
 - `http://localhost:8000/openapi/session-proxy.json`
-- `http://localhost:8000/openapi/odoo-service.json`
 - `http://localhost:8000/openapi/siigo-service.json`
 - `http://localhost:8000/openapi/integration-config-service.json`
 
@@ -704,7 +668,7 @@ Los specs OpenAPI de cada servicio también se exponen en el gateway:
 - **Municipios de ReteICA, una sola fuente**: los municipios donde la empresa retiene ICA son los de `retention_ica_rates`, la única tabla que además lleva la tarifa. El perfil fiscal (`tenant_fiscal_profile`) solo dice **si** la empresa es agente de ICA, no **dónde**. Tenían las dos listas y podían discrepar: un municipio del perfil sin tarifa no habilita la retención (el sistema se niega a estimar el porcentaje), y uno con tarifa fuera del perfil quedaba invisible para el modelo.
 - **El RAG solo aprende de lo contabilizado (RF-08)**: una causación se convierte en conocimiento reutilizable únicamente cuando SIIGO la acepta y el documento queda en `Contabilizada`. Aprobar no basta: entre aprobar y contabilizar todavía puede fallar el tercero, el comprobante o la cuenta, y esos casos son justo los que no deben servir de ejemplo. Lo que se indexa es la causación **final enviada a SIIGO**, no la primera sugerencia de la IA.
 - **Best-effort en indexación**: si el rag-service no está disponible al contabilizar, el xml-processor loguea un warning y continúa. La factura ya existe en SIIGO y nada puede deshacerla; el conocimiento perdido se repone con `POST /internal/documents/reindex`.
-- **LLM asigna cuentas PUC por ítem, no asientos completos**: el rol del LLM es asignar un código del Plan Único de Cuentas (PUC) a cada línea de detalle de la factura. Los asientos contables completos quedan a cargo del software de destino (SIIGO/Odoo). El historial de asignaciones vive en `document_details.code`.
+- **LLM asigna cuentas PUC por ítem, no asientos completos**: el rol del LLM es asignar un código del Plan Único de Cuentas (PUC) a cada línea de detalle de la factura. Los asientos contables completos quedan a cargo del software de destino (SIIGO). El historial de asignaciones vive en `document_details.code`.
 - **Best-effort en asignación de cuentas**: si el llm-service no está disponible tras procesar un XML, se loguea warning y el documento queda guardado sin codes. Se puede reasignar manualmente con `POST /api/v1/accounting/code-assignments/{id}`.
 - **Enriquecimiento automático de líneas**: al procesar cada XML, xml-processor asigna automáticamente `tax_id` (lookup en integration-config-service), `cost_center_id` (historial de la misma empresa) y `payment_type_id` (del emisor) antes de guardar el documento.
 - **Dominio independiente**: las entidades de dominio no se comparten entre servicios. Cada uno define sus propios contratos.

@@ -4,7 +4,7 @@ Puerto: **8003**
 
 ## Responsabilidad
 
-Consultas RAG-aumentadas con OpenAI y asignación automática de cuentas PUC a líneas de detalle de facturas. NO genera asientos contables completos — eso lo hace el software destino (SIIGO/Odoo).
+Consultas RAG-aumentadas con OpenAI y asignación automática de cuentas PUC a líneas de detalle de facturas. NO genera asientos contables completos — eso lo hace el software destino (SIIGO).
 
 ## Endpoints
 

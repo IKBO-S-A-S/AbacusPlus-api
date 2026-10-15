@@ -23,7 +23,6 @@ SERVICES=(
   "abacus_siigo_service:8006"
   "abacus_llm_service:8003"
   "abacus_rag_service:8002"
-  "abacus_odoo_service:8005"
 )
 DB_CONTAINER="abacus_db"
 BACKUP="${BACKUP:-1}"

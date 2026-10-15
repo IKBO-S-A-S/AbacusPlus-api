@@ -35,8 +35,6 @@ Cliente
                    ├─ GET|POST /api/v1/integrations ──►  integration-config-service :8007
                    │
                    ├─ POST /api/v1/dian       ──►  session-proxy :8004
-                   │
-                   └─ GET|POST /api/v1/odoo   ──►  odoo-service :8005
 ```
 
 ## Servicios
@@ -48,7 +46,6 @@ Cliente
 | [rag-service](services/rag-service/README.md) | 8002 | Indexación y búsqueda vectorial con pgvector + Ollama |
 | [llm-service](services/llm-service/README.md) | 8003 | Consultas RAG y asignación PUC por ítem vía OpenAI |
 | [session-proxy](services/session-proxy/README.md) | 8004 | Autenticación DIAN, descarga de ZIPs, cola de trabajos |
-| [odoo-service](services/odoo-service/README.md) | 8005 | Sincronización de facturas de compra desde Odoo |
 | [siigo-service](services/siigo-service/README.md) | 8006 | Autenticación y sincronización de plan de cuentas SIIGO |
 | [integration-config-service](services/integration-config-service/README.md) | 8007 | Catálogo agnóstico: cuentas PUC, centros de costo, credenciales |
 

@@ -6,7 +6,7 @@ Puerto: **8001**
 
 Procesa facturas electrónicas DIAN en formato ZIP o XML, las valida (NIT con dígito de verificación), las persiste en PostgreSQL y coordina el enriquecimiento posterior con otros servicios.
 
-No genera asientos contables completos. No asigna cuentas PUC directamente — ese rol es del llm-service. No interactua con SIIGO ni Odoo.
+No genera asientos contables completos. No asigna cuentas PUC directamente — ese rol es del llm-service. No interactua con SIIGO.
 
 ## Endpoints
 

@@ -18,7 +18,6 @@ SERVICE_URLS = [
     os.getenv("XML_PROCESSOR_URL", "http://xml-processor:8001"),
     os.getenv("RAG_SERVICE_URL", "http://rag-service:8002"),
     os.getenv("LLM_SERVICE_URL", "http://llm-service:8003"),
-    os.getenv("ODOO_SERVICE_URL", "http://odoo-service:8005"),
     os.getenv("SIIGO_SERVICE_URL", "http://siigo-service:8006"),
     os.getenv("INTEGRATION_CONFIG_URL", "http://integration-config-service:8007"),
 ]

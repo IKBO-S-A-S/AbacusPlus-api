@@ -20,7 +20,6 @@ jobs:
           - siigo-service
           - integration-config-service
           - auth-service
-          - odoo-service
           - session-proxy
 
     services:
@@ -72,8 +71,4 @@ jobs:
           EXTERNAL_BASE_URL: https://catalogo-vpfe.dian.gov.co
           EXTERNAL_LOGIN_PATH: /User/AuthToken
           SESSION_TTL_SECONDS: "3600"
-          ODOO_URL: http://localhost:8069
-          ODOO_DB: odoo
-          ODOO_USER: admin
-          ODOO_PASSWORD: admin
           SIIGO_BASE_URL: https://api.siigo.com
