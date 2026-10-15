@@ -516,6 +516,8 @@ Solo leen y reportan; invocarlos antes de dar un cambio por terminado.
 |--------|---------------|
 | `auth-guard` | Cambios en `routers/`, `auth_dependency.py` o `nginx.conf`: `require_write`, tenant desde el token, `/internal/*` |
 | `accounting-safety` | Cambios en contabilización SIIGO (RF-05) o aprendizaje del RAG (RF-08): cerrojo, estados inciertos, auditoría append-only |
+| `tenant-migration-reviewer` | Cambios en `tenant_migrations.py`, modelos o aprovisionamiento: idempotencia, compatibilidad hacia atrás, orden de servicios |
+| `retention-validator-auditor` | Cambios en retenciones (`llm-service`, tarifas, perfil fiscal, RAG): jerarquía de fuentes y validación determinística |
 | `test-runner` | Antes de decir "listo" o commitear: corre solo los tests de los servicios tocados |
 
 ## Variables de entorno (.env)

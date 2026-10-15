@@ -510,7 +510,7 @@ docker run --rm -v "$(pwd)/services/xml-processor:/app" --workdir //app python:3
 
 ## Agentes de revisión
 
-Claude Code define tres revisores en `.claude/agents/` (`auth-guard`, `accounting-safety`, `test-runner`). Codex no los ejecuta, pero sus listas de reglas aplican igual: leer esos archivos antes de tocar `routers/`, la contabilización SIIGO (RF-05) o el aprendizaje del RAG (RF-08), y correr los tests de los servicios afectados antes de dar un cambio por terminado.
+Claude Code define cinco revisores en `.claude/agents/` (`auth-guard`, `accounting-safety`, `tenant-migration-reviewer`, `retention-validator-auditor`, `test-runner`). Codex no los ejecuta, pero sus listas de reglas aplican igual: leer esos archivos antes de tocar `routers/`, la contabilización SIIGO (RF-05), el aprendizaje del RAG (RF-08), las migraciones de tenant o las retenciones, y correr los tests de los servicios afectados antes de dar un cambio por terminado.
 
 ## Variables de entorno (.env)
 
