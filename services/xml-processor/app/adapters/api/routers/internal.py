@@ -12,10 +12,13 @@ from app.application.dto.catalog import (
     CostCenterProjectionResponse,
     PucAccountProjectionItem,
     PucAccountProjectionResponse,
+    RetentionFuenteRateResponse,
 )
 from app.application.dto.document import (
     DocumentDetailCodeUpdateItem,
     DocumentDetailCodeUpdateResponse,
+    DocumentExistenceCheckRequest,
+    DocumentExistenceCheckResponse,
     DocumentResponse,
 )
 from app.application.dto.document_tax import (
@@ -57,8 +60,14 @@ def _verify_internal_secret(x_internal_secret: str = Header(...)):
         raise HTTPException(status_code=403, detail="Forbidden")
 
 
-def _get_tenant_db_internal(x_tenant_slug: str = Header(...)) -> Session:
-    return get_session_for_tenant(x_tenant_slug)
+def _get_tenant_db_internal(x_tenant_slug: str = Header(...)):
+    # Generador para que FastAPI cierre la sesión al terminar la petición: devolverla sin
+    # cerrar dejaba una conexión abierta por cada llamada interna.
+    db = get_session_for_tenant(x_tenant_slug)
+    try:
+        yield db
+    finally:
+        db.close()
 
 
 def _migrate_tenant_db(engine) -> None:
@@ -412,6 +421,44 @@ def get_issuer_internal(
         "tipo_contribuyente": issuer.tipo_contribuyente,
         "notes": issuer.notes,
     }
+
+
+@router.post(
+    "/internal/documents/existence-checks",
+    include_in_schema=False,
+    response_model=DocumentExistenceCheckResponse,
+    dependencies=[Depends(_verify_internal_secret)],
+)
+def check_documents_existence_internal(
+    request: DocumentExistenceCheckRequest,
+    db: Session = Depends(_get_tenant_db_internal),
+):
+    """Qué CUFE de la lista ya están guardados completos (con PDF y XML oficiales).
+
+    La descarga desde la DIAN lo consulta antes de encolar para no bajar de nuevo, con
+    navegador y captcha, documentos que xml-processor descartaría por duplicados. Es POST
+    porque la lista (hasta 500 CUFE de 96 caracteres) excede lo razonable para una URL
+    (RFC 9110 §9.3.1).
+    """
+    existing = DocumentRepository(db).get_complete_cufes(request.cufes)
+    return DocumentExistenceCheckResponse(existing=sorted(existing))
+
+
+@router.get(
+    "/internal/catalog/retention-fuente-rates",
+    response_model=list[RetentionFuenteRateResponse],
+    include_in_schema=False,
+    dependencies=[Depends(_verify_internal_secret)],
+)
+def get_retention_fuente_rates_internal(db: Session = Depends(_get_tenant_db_internal)):
+    """Tarifas oficiales de ReteFuente para el llm-service (servicio-a-servicio).
+
+    Es la fuente vinculante del porcentaje al sugerir retenciones (RF-08). La sugerencia
+    automática de un documento recién descargado corre sin JWT de usuario, así que no podía
+    leer `GET /catalog/retention-fuente-rates`; esta ruta devuelve lo mismo autenticando con
+    `X-Internal-Secret` y el `X-Tenant-Slug`.
+    """
+    return [RetentionFuenteRateResponse.model_validate(r) for r in RetentionRepository(db).get_fuente_rates()]
 
 
 @router.get(

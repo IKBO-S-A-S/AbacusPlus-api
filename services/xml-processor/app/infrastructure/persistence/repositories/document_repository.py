@@ -16,6 +16,28 @@ class DocumentRepository(DocumentRepositoryPort):
     def get_by_document_number(self, document_number: str) -> Optional[Document]:
         return self.db.query(Document).filter(Document.document_number == document_number).first()
 
+    def get_complete_cufes(self, cufes: list[str]) -> set[str]:
+        """CUFE (en minúsculas) de los documentos ya guardados **con su PDF y su XML**.
+
+        Lo usa la descarga desde la DIAN para no volver a bajar lo que ya está completo. Un
+        documento sin PDF o sin XML oficial no cuenta: re-descargarlo es lo que permite
+        completarlo (el procesamiento de un duplicado rellena esos archivos). Solo se
+        selecciona la columna `cufe`; `IS NOT NULL` no obliga a leer el TOAST de los archivos.
+        """
+        candidatos = {c for c in cufes if c} | {c.lower() for c in cufes if c}
+        if not candidatos:
+            return set()
+        filas = (
+            self.db.query(Document.cufe)
+            .filter(
+                Document.cufe.in_(candidatos),
+                Document.pdf_data.isnot(None),
+                Document.xml_data.isnot(None),
+            )
+            .all()
+        )
+        return {cufe.lower() for (cufe,) in filas if cufe}
+
     def get_by_id(self, document_id: int) -> Optional[Document]:
         """Un documento por id, **sin traer el PDF ni el XML en el SELECT**.
 

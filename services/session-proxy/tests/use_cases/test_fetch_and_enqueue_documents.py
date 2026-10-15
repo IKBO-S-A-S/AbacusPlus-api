@@ -132,3 +132,73 @@ async def test_perfil_sin_nit_se_rechaza(nit):
         await uc.execute(_request(), "ikbo")
 
     assert queue.enqueued == []
+
+
+class FakeProcessed:
+    def __init__(self, existing=(), fails=False):
+        self._existing = {e.lower() for e in existing}
+        self._fails = fails
+        self.asked = []
+
+    async def existing_track_ids(self, tenant_slug, track_ids):
+        self.asked.append((tenant_slug, list(track_ids)))
+        return set() if self._fails else self._existing
+
+
+def _use_case_with_processed(body, processed):
+    queue, store, progress = FakeQueue(), FakeBatchStore(), FakeProgress()
+    uc = FetchAndEnqueueDocumentsUseCase(
+        external_client=FakeClient(body),
+        job_queue=queue,
+        base_url="https://portal.example.com",
+        login_url="https://portal.example.com/login",
+        batch_store=store,
+        job_progress_store=progress,
+        fiscal_profile=FakeFiscalProfile("900031352"),
+        processed_documents=processed,
+    )
+    return uc, queue, store, progress
+
+
+_DOCS = {
+    "data": [
+        {"Id": "AAA", "DocumentTypeId": "01"},
+        {"Id": "bbb", "DocumentTypeId": "01"},
+        {"Id": "ccc", "DocumentTypeId": "01"},
+    ]
+}
+
+
+@pytest.mark.asyncio
+async def test_los_documentos_ya_guardados_no_se_encolan():
+    processed = FakeProcessed(existing=["aaa", "BBB"])
+    uc, queue, _, progress = _use_case_with_processed(_DOCS, processed)
+
+    result = await uc.execute(_request(), "ikbo")
+
+    assert result.enqueued == 1 and result.skipped_existing == 2
+    assert result.job_ids == ["ccc"]
+    assert queue.enqueued[0][1]["track_ids"] == ["ccc"]
+    assert progress.inited == ["ccc"]
+    assert processed.asked == [("ikbo", ["AAA", "bbb", "ccc"])]
+
+
+@pytest.mark.asyncio
+async def test_si_todos_existen_no_se_encola_ningun_job():
+    uc, queue, store, _ = _use_case_with_processed(_DOCS, FakeProcessed(existing=["aaa", "bbb", "ccc"]))
+
+    result = await uc.execute(_request(), "ikbo")
+
+    assert result.enqueued == 0 and result.skipped_existing == 3
+    assert queue.enqueued == []
+    assert len(store.saved) == 1  # el batch se registra igual, vacío
+
+
+@pytest.mark.asyncio
+async def test_si_falla_la_consulta_se_descarga_todo():
+    uc, queue, _, _ = _use_case_with_processed(_DOCS, FakeProcessed(fails=True))
+
+    result = await uc.execute(_request(), "ikbo")
+
+    assert result.enqueued == 3 and result.skipped_existing == 0
+    assert len(queue.enqueued) == 1

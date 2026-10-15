@@ -38,6 +38,14 @@ class EnqueueDownloadsResponse(BaseModel):
         description="Identificador único del batch. Úsalo en GET /dian/documents/batches/{batch_id} para consultar el estado.",
     )
     enqueued: int = Field(..., description="Número de documentos encolados para descarga.")
+    skipped_existing: int = Field(
+        0,
+        description=(
+            "Documentos del rango que la empresa ya tiene guardados completos (con PDF y XML) "
+            "y por eso no se descargaron de nuevo."
+        ),
+        examples=[4],
+    )
     job_ids: list[str] = Field(..., description="IDs individuales de cada job ARQ.")
     StartDate: str
     EndDate: str

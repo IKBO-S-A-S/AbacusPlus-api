@@ -35,6 +35,9 @@ router = APIRouter(dependencies=[Depends(get_token_data)])
     description=(
         "Consulta el portal DIAN por rango de fechas, filtra documentos con `DocumentTypeId=96` "
         "y encola la descarga de cada ZIP en segundo plano.\n\n"
+        "Los documentos que la empresa ya tiene guardados completos (con PDF y XML oficiales) "
+        "no se descargan de nuevo; su cantidad sale en `skipped_existing`. Si esa consulta "
+        "falla, se descarga todo como antes.\n\n"
         "Antes de consultar la DIAN valida que el `rk` del enlace (el NIT de la empresa) "
         "coincida con el NIT del perfil fiscal del tenant "
         "(`GET /api/v1/integrations/fiscal-profile`); si no, responde 422 sin tocar la DIAN.\n\n"

@@ -12,7 +12,11 @@ from app.domain.exceptions.base import (
     RkNitMismatchException,
 )
 from app.domain.ports.queue import JobQueuePort
-from app.domain.ports.services import ExternalClientPort, FiscalProfilePort
+from app.domain.ports.services import (
+    ExternalClientPort,
+    FiscalProfilePort,
+    ProcessedDocumentsPort,
+)
 from app.infrastructure.queue.batch_store import RedisBatchStore
 from app.infrastructure.queue.job_progress_store import JobProgressStore
 
@@ -33,8 +37,10 @@ class FetchAndEnqueueDocumentsUseCase:
         batch_store: RedisBatchStore,
         job_progress_store: JobProgressStore,
         fiscal_profile: FiscalProfilePort,
+        processed_documents: ProcessedDocumentsPort | None = None,
     ):
         self._fiscal_profile = fiscal_profile
+        self._processed = processed_documents
         self._client = external_client
         self._queue = job_queue
         self._base_url = base_url.rstrip("/")
@@ -102,8 +108,7 @@ class FetchAndEnqueueDocumentsUseCase:
 
         # El progreso se lleva por trackId (clave = track_id). El endpoint de estado
         # itera estos "job_ids" lógicos; el job ARQ real que descarga el lote es uno solo.
-        track_ids: list[str] = []
-        job_track_map: dict[str, str] = {}
+        candidates: list[str] = []
         for doc in raw_docs:
             track_id = doc.get("Id") or doc.get("id")
             if not track_id:
@@ -112,7 +117,27 @@ class FetchAndEnqueueDocumentsUseCase:
             if str(doc_type_id) == "96":
                 logger.info("Documento ignorado (DocumentTypeId=96) — trackId: %s", track_id)
                 continue
-            track_id = str(track_id)
+            candidates.append(str(track_id))
+
+        # Un documento que el tenant ya tiene completo no se vuelve a descargar: bajarlo cuesta
+        # navegador, captcha y entre 10 y 45 s, y xml-processor lo descartaría como duplicado.
+        already_stored: set[str] = set()
+        if self._processed is not None and candidates:
+            already_stored = await self._processed.existing_track_ids(tenant_slug, candidates)
+        skipped = [t for t in candidates if t.lower() in already_stored]
+        if skipped:
+            logger.info(
+                "Batch %s: %d de %d documentos ya existen y no se descargan",
+                batch_id,
+                len(skipped),
+                len(candidates),
+            )
+
+        track_ids: list[str] = []
+        job_track_map: dict[str, str] = {}
+        for track_id in candidates:
+            if track_id.lower() in already_stored:
+                continue
             track_ids.append(track_id)
             job_track_map[track_id] = track_id
             await self._progress.init(track_id, track_id)
@@ -141,6 +166,7 @@ class FetchAndEnqueueDocumentsUseCase:
         return EnqueueDownloadsResponse(
             batch_id=batch_id,
             enqueued=len(track_ids),
+            skipped_existing=len(skipped),
             job_ids=track_ids,
             StartDate=request.StartDate,
             EndDate=request.EndDate,

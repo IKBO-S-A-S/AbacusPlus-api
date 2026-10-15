@@ -49,3 +49,10 @@ class ExternalClientPort(ABC):
     ) -> bytes:
         """Autentica y descarga contenido binario (ZIP). Retorna bytes del archivo."""
         ...
+
+
+class ProcessedDocumentsPort(ABC):
+    @abstractmethod
+    async def existing_track_ids(self, tenant_slug: str, track_ids: list[str]) -> set[str]:
+        """trackId (en minúsculas) de los documentos que el tenant ya tiene guardados completos."""
+        ...

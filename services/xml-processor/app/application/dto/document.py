@@ -1002,3 +1002,22 @@ class DocumentAccountingAuditResponse(BaseModel):
     changes: list[DocumentFieldChangeResponse] = Field(
         default_factory=list, description="Correcciones manuales, de la más reciente a la primera."
     )
+
+
+class DocumentExistenceCheckRequest(BaseModel):
+    cufes: list[str] = Field(
+        ...,
+        max_length=500,
+        description="CUFE (trackId de la DIAN) de los documentos por consultar.",
+        examples=[["74b429c33cb0d4e881db7361..."]],
+    )
+
+
+class DocumentExistenceCheckResponse(BaseModel):
+    existing: list[str] = Field(
+        ...,
+        description=(
+            "CUFE, en minúsculas, de los documentos que ya están guardados con su PDF y su XML "
+            "oficiales. Los que falten o estén incompletos no aparecen."
+        ),
+    )
