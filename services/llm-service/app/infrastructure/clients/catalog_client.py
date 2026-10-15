@@ -8,11 +8,28 @@ logger = logging.getLogger(__name__)
 class CatalogClient:
     """Cliente HTTP para obtener datos de catálogo desde xml-processor."""
 
-    def __init__(self, base_url: str, bearer_token: str = ""):
+    #: Rutas públicas que tienen versión interna. El modo servicio-a-servicio solo cubre lo que
+    #: la sugerencia automática de retenciones necesita: las tarifas de ReteFuente.
+    _INTERNAL_PATHS = {
+        "/api/v1/catalog/retention-fuente-rates": "/internal/catalog/retention-fuente-rates",
+    }
+
+    def __init__(
+        self,
+        base_url: str,
+        bearer_token: str = "",
+        internal_secret: str = "",
+        tenant_slug: str = "",
+    ):
         self._base_url = base_url.rstrip("/")
         self._headers = {"Authorization": f"Bearer {bearer_token}"} if bearer_token else {}
+        self._internal = bool(internal_secret)
+        if self._internal:
+            self._headers = {"X-Internal-Secret": internal_secret, "X-Tenant-Slug": tenant_slug}
 
     async def _get(self, path: str) -> list[dict]:
+        if self._internal:
+            path = self._INTERNAL_PATHS.get(path, path)
         client = await get_client()
         response = await client.get(
             f"{self._base_url}{path}", headers=self._headers, timeout=10.0

@@ -3,20 +3,22 @@ import contextlib
 import logging
 import os
 import shutil
+import time
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Optional
 
-import httpx
-
+from app.application.use_cases.auto_accounting import AutoAccountingUseCase
 from app.application.use_cases.process_xml import ProcessXmlUseCase
 from app.application.use_cases.publish_document_files import PublishDocumentFilesUseCase
 from app.domain.exceptions.base import DuplicateEntityException
 from app.domain.services.document_naming import sanitize_name
 from app.infrastructure.clients.integration_config_client import IntegrationConfigClient
+from app.infrastructure.clients.llm_client import LlmClient
 from app.infrastructure.clients.rag_client import RagClient
 from app.infrastructure.config.database import SessionLocal
 from app.infrastructure.config.tenant_connection_manager import get_session_for_tenant
+from app.infrastructure.metrics import log_metric, timed
 from app.infrastructure.persistence.models.processing_log import ProcessingLog
 from app.infrastructure.persistence.repositories.concept_repository import ConceptRepository
 from app.infrastructure.persistence.repositories.document_repository import DocumentRepository
@@ -228,9 +230,13 @@ async def process_queue_worker() -> None:
     logger.info("Worker de procesamiento de ZIPs iniciado")
     while True:
         item = await _queue.get()
-        # Soporta tanto tuplas (path, job_id) como paths sueltos (compatibilidad)
+        # Soporta tuplas (path, job_id, tenant_slug, enqueued_at), las anteriores de 3 y 2
+        # elementos, y paths sueltos (compatibilidad).
+        enqueued_at: Optional[float] = None
         if isinstance(item, tuple):
-            if len(item) == 3:
+            if len(item) == 4:
+                file_path, job_id, tenant_slug, enqueued_at = item
+            elif len(item) == 3:
                 file_path, job_id, tenant_slug = item
             else:
                 file_path, job_id = item
@@ -238,11 +244,30 @@ async def process_queue_worker() -> None:
         else:
             file_path, job_id, tenant_slug = item, None, ""
 
+        timings: dict = {}
+        started = time.perf_counter()
         try:
-            await _process_single_file(file_path, job_id, tenant_slug)
+            await _process_single_file(file_path, job_id, tenant_slug, timings)
         except Exception as e:
             logger.error("Error inesperado procesando %s: %s", file_path.name, e)
+            timings.setdefault("outcome", "crash")
         finally:
+            log_metric(
+                "doc_process",
+                file=file_path.name[:24],
+                outcome=timings.get("outcome", "unknown"),
+                queue_wait_ms=(
+                    round((time.monotonic() - enqueued_at) * 1000 - (time.perf_counter() - started) * 1000)
+                    if enqueued_at is not None
+                    else None
+                ),
+                total_ms=round((time.perf_counter() - started) * 1000),
+                parse_db_ms=timings.get("parse_db_ms", 0),
+                extract_ms=timings.get("extract_ms", 0),
+                storage_ms=timings.get("storage_ms", 0),
+                accounting_ms=timings.get("accounting_ms", 0),
+                queue_left=_queue.qsize(),
+            )
             _queue.task_done()
 
 
@@ -258,9 +283,31 @@ def build_integration_config_client(tenant_slug: str) -> IntegrationConfigClient
     return IntegrationConfigClient(base_url=url, tenant_slug=tenant_slug)
 
 
+def build_llm_client(tenant_slug: str) -> Optional[LlmClient]:
+    """Cliente del llm-service para la causación en segundo plano, por el canal interno.
+
+    La descarga masiva no tiene JWT de usuario: la versión anterior llamaba al endpoint
+    público sin credenciales y el llm-service respondía 401 a cada documento. Sin tenant no
+    hay a qué base apuntar, así que no se devuelve cliente.
+    """
+    if not tenant_slug:
+        return None
+    return LlmClient(
+        base_url=os.getenv("LLM_SERVICE_URL", "http://llm-service:8003"),
+        internal_secret=os.getenv("INTERNAL_SECRET", ""),
+        tenant_slug=tenant_slug,
+    )
+
+
 async def _process_single_file(
-    file_path: Path, job_id: Optional[str], tenant_slug: str = ""
+    file_path: Path,
+    job_id: Optional[str],
+    tenant_slug: str = "",
+    timings: Optional[dict] = None,
 ) -> None:
+    """`timings` acumula ms por etapa y el resultado (`outcome`) para las métricas del worker."""
+    if timings is None:
+        timings = {}
     downloads_dir = file_path.parent
     processed_dir = downloads_dir / "processed"
     errors_dir = downloads_dir / "errors"
@@ -290,12 +337,17 @@ async def _process_single_file(
             ),
         )
         log_repo = ProcessingLogRepository(db)
-
-        result = await use_case.execute(FileWrapper(file_path))
-
-        pdf_bytes, xml_bytes, pdf_path, xml_path = _extract_files_to_processed(
-            file_path, processed_dir, result["data"]
+        auto_accounting = AutoAccountingUseCase(
+            DocumentRepository(db), build_llm_client(tenant_slug)
         )
+
+        with timed("parse_db_ms", timings):
+            result = await use_case.execute(FileWrapper(file_path))
+
+        with timed("extract_ms", timings):
+            pdf_bytes, xml_bytes, pdf_path, xml_path = _extract_files_to_processed(
+                file_path, processed_dir, result["data"]
+            )
 
         # Best-effort: un backend caído no puede tumbar el procesamiento del XML, pero el
         # fallo debe quedar en processing_logs (consultable por API) y no solo en el log de
@@ -308,6 +360,7 @@ async def _process_single_file(
         # documento, para poder visualizarlos luego sin volver a la DIAN. Best-effort: si
         # falla, no rompe el procesamiento del documento.
         if pdf_bytes or xml_bytes:
+            storage_started = time.perf_counter()
             try:
                 repo = DocumentRepository(db)
                 doc = repo.get_by_id(result["document_id"])
@@ -348,8 +401,12 @@ async def _process_single_file(
                 storage_status = "error"
                 storage_error = f"{type(e).__name__}: {e}"
                 logger.warning("No se pudo almacenar PDF/XML oficial en BD: %s", e)
+            finally:
+                timings["storage_ms"] = round((time.perf_counter() - storage_started) * 1000)
 
-        acc_status, acc_error = await _trigger_accounting(result["document_id"])
+        with timed("accounting_ms", timings):
+            acc_status, acc_error = await auto_accounting.execute(result["document_id"])
+        timings["outcome"] = "added"
 
         log_repo.create(
             ProcessingLog(
@@ -370,9 +427,12 @@ async def _process_single_file(
 
         if progress:
             await progress.mark_xml_done(job_id, "added", document_id=result["document_id"])
-            await progress.mark_accounting_done(job_id, acc_status or "error", error=acc_error)
+            # `skipped`: la causación no aplicaba (p. ej. el tenant aún no tiene historial
+            # confirmado). No es un error, y marcarlo como tal ensuciaba el resumen del lote.
+            await progress.mark_accounting_done(job_id, acc_status or "skipped", error=acc_error)
 
     except DuplicateEntityException as e:
+        timings["outcome"] = "duplicate"
         log_repo = ProcessingLogRepository(db)
         doc_number = e.message.split(": ")[-1] if ": " in e.message else ""
 
@@ -421,12 +481,10 @@ async def _process_single_file(
                 storage_status = "error"
                 storage_error = f"{type(ex).__name__}: {ex}"
                 logger.warning("No se pudo hacer backfill de PDF/XML oficial: %s", ex)
-            already_has_entry = await _has_accounting_entry(existing_doc.id)
-            if not already_has_entry:
-                logger.info("Documento duplicado %s sin causación — generando...", doc_number)
-                acc_status, acc_error = await _trigger_accounting(existing_doc.id)
-            else:
-                logger.info("Documento duplicado %s ya tiene causación — omitiendo", doc_number)
+            with timed("accounting_ms", timings):
+                acc_status, acc_error = await auto_accounting.execute(
+                    existing_doc.id, only_if_uncoded=True
+                )
 
         log_repo.create(
             ProcessingLog(
@@ -448,10 +506,12 @@ async def _process_single_file(
             await progress.mark_xml_done(
                 job_id, "duplicate", document_id=existing_doc.id if existing_doc else None
             )
-            if acc_status:
-                await progress.mark_accounting_done(job_id, acc_status, error=acc_error)
+            # Siempre se cierra la etapa: sin esto, un duplicado que no necesitaba causación
+            # dejaba el lote esperándola para siempre.
+            await progress.mark_accounting_done(job_id, acc_status or "skipped", error=acc_error)
 
     except Exception as e:
+        timings["outcome"] = "error"
         with contextlib.suppress(Exception):
             log_repo = ProcessingLogRepository(db)
             log_repo.create(
@@ -472,39 +532,3 @@ async def _process_single_file(
 
     finally:
         db.close()
-
-
-async def _has_accounting_entry(document_id: int) -> bool:
-    """Consulta llm-service para saber si el documento ya tiene un asiento contable."""
-    url = os.getenv("LLM_SERVICE_URL", "http://llm-service:8003")
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{url}/api/v1/accounting/entries/{document_id}")
-        if response.status_code == 200:
-            data = response.json()
-            return data.get("accounting_entry") is not None
-    except Exception as e:
-        logger.warning("No se pudo verificar causación para doc %d: %s", document_id, e)
-    return False
-
-
-async def _trigger_accounting(document_id: int):
-    """Dispara la generación de asiento contable en llm-service (best-effort).
-    Retorna (accounting_status, accounting_error)."""
-    url = os.getenv("LLM_SERVICE_URL", "http://llm-service:8003")
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                f"{url}/api/v1/accounting/code-assignments/{document_id}",
-            )
-        if response.status_code in (200, 201):
-            logger.info("Causación contable generada para documento %d", document_id)
-            return "triggered", None
-        else:
-            msg = f"HTTP {response.status_code}: {response.text[:200]}"
-            logger.warning("Error al generar causación para doc %d: %s", document_id, msg)
-            return "error", msg
-    except Exception as e:
-        msg = str(e)
-        logger.warning("No se pudo generar causación para doc %d: %s", document_id, msg)
-        return "error", msg

@@ -10,9 +10,19 @@ logger = logging.getLogger(__name__)
 class RagClient(RagClientPort):
     """Cliente HTTP para consultar el rag-service."""
 
-    def __init__(self, base_url: str, bearer_token: str = ""):
+    def __init__(
+        self,
+        base_url: str,
+        bearer_token: str = "",
+        internal_secret: str = "",
+        tenant_slug: str = "",
+    ):
         self._base_url = base_url.rstrip("/")
         self._headers = {"Authorization": f"Bearer {bearer_token}"} if bearer_token else {}
+        # Modo servicio-a-servicio: la causación automática corre sin JWT de usuario.
+        self._internal = bool(internal_secret)
+        if self._internal:
+            self._headers = {"X-Internal-Secret": internal_secret, "X-Tenant-Slug": tenant_slug}
 
     async def search(
         self,
@@ -46,7 +56,9 @@ class RagClient(RagClientPort):
             payload["min_similarity"] = min_similarity
         client = await get_client()
         response = await client.post(
-            f"{self._base_url}/api/v1/chunks/search",
+            f"{self._base_url}/internal/chunks/search"
+            if self._internal
+            else f"{self._base_url}/api/v1/chunks/search",
             json=payload,
             headers=self._headers,
             timeout=15.0,

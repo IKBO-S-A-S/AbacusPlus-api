@@ -6,15 +6,23 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy import NullPool, create_engine, text
 
+from app.application.dto.chart_account import ChartAccountResponse
+from app.application.dto.cost_center import CostCenterResponse
 from app.application.dto.fiscal_profile import FiscalProfileResponse
+from app.application.dto.retention import RetentionResponse
 from app.application.dto.retention_criteria import RetentionCriteriaResponse
 from app.application.dto.tax import TaxResponse
 from app.application.use_cases.manage_fiscal_profile import ManageFiscalProfileUseCase
 from app.application.use_cases.manage_retention_criteria import ManageRetentionCriteriaUseCase
 from app.infrastructure.config.tenant_connection_manager import get_session_for_tenant
+from app.infrastructure.persistence.repositories.chart_account_repository import (
+    ChartAccountRepository,
+)
+from app.infrastructure.persistence.repositories.cost_center_repository import CostCenterRepository
 from app.infrastructure.persistence.repositories.retention_criteria_repository import (
     RetentionCriteriaRepository,
 )
+from app.infrastructure.persistence.repositories.retention_repository import RetentionRepository
 from app.infrastructure.persistence.repositories.tax_repository import TaxRepository
 from app.infrastructure.persistence.repositories.tenant_fiscal_profile_repository import (
     TenantFiscalProfileRepository,
@@ -130,6 +138,7 @@ def get_fiscal_profile_internal(x_tenant_slug: str = Header(...)) -> FiscalProfi
 def get_taxes_internal(
     x_tenant_slug: str = Header(...),
     active: Optional[bool] = True,
+    include_inactive: bool = False,
 ) -> list[TaxResponse]:
     """Catálogo de impuestos para el xml-processor (servicio-a-servicio).
 
@@ -145,10 +154,78 @@ def get_taxes_internal(
 
     Por defecto devuelve solo los activos, que es lo que necesita quien va a enlazar una línea:
     un impuesto desactivado ya no debe asignarse a nada nuevo.
+
+    `include_inactive=true` devuelve el catálogo completo, como `GET /integrations/taxes`: lo
+    pide el llm-service, que filtra por activo él mismo porque las filas inactivas siguen
+    sirviendo para reconocer el tipo de una retención ya registrada.
     """
     db = get_session_for_tenant(x_tenant_slug)
     try:
-        return TaxRepository(db).list(active=active)
+        return TaxRepository(db).list(active=None if include_inactive else active)
+    finally:
+        db.close()
+
+
+@router.get(
+    "/internal/chart-accounts",
+    response_model=list[ChartAccountResponse],
+    include_in_schema=False,
+    dependencies=[Depends(_verify_internal_secret)],
+)
+def get_chart_accounts_internal(
+    x_tenant_slug: str = Header(...),
+    active: Optional[bool] = None,
+) -> list[ChartAccountResponse]:
+    """Plan de cuentas para el llm-service (servicio-a-servicio).
+
+    La causación automática de un documento descargado de la DIAN corre en segundo plano, sin
+    JWT de usuario: autentica con `X-Internal-Secret` y pasa el `X-Tenant-Slug`. Devuelve lo
+    mismo que `GET /integrations/chart-accounts`.
+    """
+    db = get_session_for_tenant(x_tenant_slug)
+    try:
+        return ChartAccountRepository(db).list(active=active)
+    finally:
+        db.close()
+
+
+@router.get(
+    "/internal/cost-centers",
+    response_model=list[CostCenterResponse],
+    include_in_schema=False,
+    dependencies=[Depends(_verify_internal_secret)],
+)
+def get_cost_centers_internal(
+    x_tenant_slug: str = Header(...),
+    active: Optional[bool] = None,
+) -> list[CostCenterResponse]:
+    """Centros de costo para el llm-service (servicio-a-servicio). Ver `/internal/chart-accounts`."""
+    db = get_session_for_tenant(x_tenant_slug)
+    try:
+        return CostCenterRepository(db).list(active=active)
+    finally:
+        db.close()
+
+
+@router.get(
+    "/internal/retentions",
+    response_model=list[RetentionResponse],
+    include_in_schema=False,
+    dependencies=[Depends(_verify_internal_secret)],
+)
+def get_retentions_internal(
+    x_tenant_slug: str = Header(...),
+    active: Optional[bool] = None,
+    type: Optional[str] = None,
+) -> list[RetentionResponse]:
+    """Catálogo de retenciones para el llm-service (servicio-a-servicio).
+
+    Ver `/internal/chart-accounts`. Sin esta ruta, la sugerencia automática de retenciones
+    de un documento recién descargado no tenía de dónde tomar las tarifas.
+    """
+    db = get_session_for_tenant(x_tenant_slug)
+    try:
+        return RetentionRepository(db).list(active=active, type=type)
     finally:
         db.close()
 

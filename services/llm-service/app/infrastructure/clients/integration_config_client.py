@@ -7,24 +7,58 @@ from app.infrastructure.clients.http_pool import get_client
 logger = logging.getLogger(__name__)
 
 
+#: Ruta pública -> ruta interna equivalente. Solo se usa en el modo servicio-a-servicio.
+_INTERNAL_PATHS = {
+    "/api/v1/integrations/chart-accounts": "/internal/chart-accounts",
+    "/api/v1/integrations/cost-centers": "/internal/cost-centers",
+    "/api/v1/integrations/taxes": "/internal/taxes",
+    "/api/v1/integrations/retentions": "/internal/retentions",
+    "/api/v1/integrations/fiscal-profile": "/internal/fiscal-profile",
+    "/api/v1/integrations/retention-criteria": "/internal/retention-criteria",
+}
+
+
 class IntegrationConfigClient:
     """Cliente HTTP para consultar catálogos del integration-config-service.
 
-    `tenant_slug` viene del token ya validado y solo se usa como clave de la caché de
-    catálogos: **no** se envía como cabecera ni sustituye a la autorización, que sigue siendo
-    el token del usuario. Sin él, el cliente funciona igual pero sin caché.
+    Dos modos de autorización:
+
+    - **Con token** (`bearer_token`): la vía interactiva. `tenant_slug` viene del token ya
+      validado y solo se usa como clave de la caché de catálogos: no se envía como cabecera.
+    - **Servicio-a-servicio** (`internal_secret` + `tenant_slug`): la causación automática de
+      un documento descargado de la DIAN, que corre en segundo plano sin JWT de usuario. Va a
+      las rutas `/internal/*`, con `X-Internal-Secret` y `X-Tenant-Slug`.
+
+    Sin `tenant_slug` el cliente funciona igual pero sin caché.
     """
 
-    def __init__(self, base_url: str, bearer_token: str = "", tenant_slug: str = ""):
+    def __init__(
+        self,
+        base_url: str,
+        bearer_token: str = "",
+        tenant_slug: str = "",
+        internal_secret: str = "",
+    ):
         self._base_url = base_url.rstrip("/")
         self._headers = {"Authorization": f"Bearer {bearer_token}"} if bearer_token else {}
         self._tenant_slug = tenant_slug
+        self._internal = bool(internal_secret)
+        if self._internal:
+            self._headers = {"X-Internal-Secret": internal_secret, "X-Tenant-Slug": tenant_slug}
 
     async def _get_json(self, path: str, params: Optional[dict] = None, timeout: float = 5.0):
+        params = dict(params or {})
+        if self._internal:
+            path = _INTERNAL_PATHS.get(path, path)
+            if path == "/internal/taxes":
+                # El catálogo completo, como la ruta pública: el filtro por activo lo aplica
+                # quien consume, porque las filas inactivas siguen sirviendo para reconocer
+                # el tipo de una retención ya registrada.
+                params["include_inactive"] = "true"
         client = await get_client()
         response = await client.get(
             f"{self._base_url}{path}",
-            params=params or {},
+            params=params,
             headers=self._headers,
             timeout=timeout,
         )

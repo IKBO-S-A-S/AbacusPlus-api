@@ -10,6 +10,8 @@ from app.application.dto.chunk import (
     InternalIndexChunkRequest,
     InternalRevokeChunkRequest,
     RevokeChunkResponse,
+    SearchRequest,
+    SearchResponse,
 )
 
 router = APIRouter()
@@ -126,5 +128,40 @@ async def revoke_chunk_internal(request: InternalRevokeChunkRequest):
             source_id=request.source_id,
             deleted=deleted,
         )
+    finally:
+        db.close()
+
+
+@router.post(
+    "/internal/chunks/search",
+    response_model=SearchResponse,
+    include_in_schema=False,
+    dependencies=[Depends(_verify_internal_secret)],
+)
+async def search_chunks_internal(
+    request: SearchRequest,
+    x_tenant_slug: str = Header(...),
+):
+    """Búsqueda semántica en la BD del tenant indicado (servicio-a-servicio).
+
+    Es la vía del llm-service cuando asigna cuentas o sugiere retenciones en segundo plano
+    (documentos recién descargados de la DIAN), donde no hay un JWT de usuario del que
+    `get_tenant_db` pueda sacar el tenant. Misma lógica y mismo cuerpo que
+    `POST /chunks/search`; el tenant llega en `X-Tenant-Slug`, de modo que la búsqueda queda
+    aislada por tenant igual que con token. Sin esta ruta, la búsqueda respondía 401 y el
+    modelo decidía sin precedentes.
+    """
+    from app.application.use_cases.search_chunks import SearchChunksUseCase
+    from app.dependencies import get_embedding_service
+    from app.infrastructure.config.tenant_connection_manager import get_session_for_tenant
+    from app.infrastructure.persistence.repositories.chunk_repository import ChunkRepository
+
+    db = get_session_for_tenant(x_tenant_slug)
+    try:
+        use_case = SearchChunksUseCase(
+            chunk_repo=ChunkRepository(db),
+            embedding_service=get_embedding_service(),
+        )
+        return await use_case.execute(request)
     finally:
         db.close()

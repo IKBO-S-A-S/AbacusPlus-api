@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -21,7 +22,9 @@ class ProcessSingleFileUseCase:
             logger.warning("Archivo no encontrado: %s", file_path)
             return None
 
-        await self._queue.put((file_path, job_id, tenant_slug))
+        # El 4.º elemento (instante de encolado) solo sirve a las métricas: permite medir cuánto
+        # espera cada ZIP detrás de los demás en la cola de un solo consumidor.
+        await self._queue.put((file_path, job_id, tenant_slug, time.monotonic()))
         logger.info(
             "ZIP encolado para procesamiento: %s (job_id=%s, tenant=%s)",
             filename,

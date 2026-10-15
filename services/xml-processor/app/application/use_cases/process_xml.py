@@ -4,6 +4,7 @@ from typing import Optional
 
 from fastapi import UploadFile
 
+from app.application.use_cases.auto_accounting import AutoAccountingUseCase
 from app.domain.exceptions.base import DuplicateEntityException, FileProcessingException
 from app.domain.ports.repositories import (
     ConceptRepositoryPort,
@@ -114,27 +115,9 @@ class ProcessXmlUseCase:
         # validado. El conocimiento se genera en un solo momento del ciclo de vida —cuando el
         # documento queda CONTABILIZADO en SIIGO— y lo publica `AccountingKnowledgePublisher`.
 
-        # Disparar asignación de cuentas PUC en llm-service (best-effort).
-        #
-        # Solo cuando ya existe historial confirmado por el contador. En la primera descarga
-        # desde la DIAN el tenant no tiene ninguna cuenta validada por una persona, así que
-        # el modelo no tendría precedente sobre el que apoyarse: el documento se deja tal
-        # como llegó y el contador decide, ya sea asignando a mano o pidiendo la sugerencia
-        # de forma explícita desde la interfaz.
-        if self.llm_client:
-            if self.document_repo.has_confirmed_accounting_history():
-                await self.llm_client.trigger_code_assignment(created.id)
-                # RF-08: la IA determina las retenciones del tercero durante el procesamiento
-                # del documento, no solo cuando el contador pulsa el botón. Va después de la
-                # asignación de cuentas porque ambas comparten el prerrequisito del PUC: si
-                # falta, la primera ya habrá dejado el aviso en el log.
-                await self.llm_client.trigger_retention_suggestion(created.id)
-            else:
-                logger.info(
-                    "Documento %d guardado sin asignación automática: el tenant aún no "
-                    "tiene contabilizaciones confirmadas por el usuario.",
-                    created.id,
-                )
+        # Causación automática (best-effort). La política de cuándo se dispara vive en
+        # `AutoAccountingUseCase`, que también usa la descarga automática desde la DIAN.
+        await AutoAccountingUseCase(self.document_repo, self.llm_client).execute(created.id)
 
         return {
             "status": "success",

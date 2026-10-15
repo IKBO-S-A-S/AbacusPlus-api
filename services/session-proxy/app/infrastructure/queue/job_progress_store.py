@@ -17,7 +17,7 @@ Estructura del hash Redis  job_progress:{job_id}:
   xml_error_code      str | ""
   accounting_done     "1" | "0"
   accounting_at       ISO 8601 | ""
-  accounting_status   "triggered" | "error" | ""
+  accounting_status   "triggered" | "error" | "skipped" | ""
   accounting_error    str | ""
   accounting_error_code str | ""
 """
