@@ -14,12 +14,14 @@ logger = logging.getLogger(__name__)
 
 _VALID_SLUG = re.compile(r"^[a-z][a-z0-9_]{1,30}$")
 
+# Orden significativo: integration-config-service primero, porque dueño de las tablas
+# `integration_*` que xml-processor referencia con FK (mismo orden que provision-tenants.sh).
 SERVICE_URLS = [
+    os.getenv("INTEGRATION_CONFIG_URL", "http://integration-config-service:8007"),
     os.getenv("XML_PROCESSOR_URL", "http://xml-processor:8001"),
     os.getenv("RAG_SERVICE_URL", "http://rag-service:8002"),
     os.getenv("LLM_SERVICE_URL", "http://llm-service:8003"),
     os.getenv("SIIGO_SERVICE_URL", "http://siigo-service:8006"),
-    os.getenv("INTEGRATION_CONFIG_URL", "http://integration-config-service:8007"),
 ]
 
 
