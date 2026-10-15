@@ -62,6 +62,10 @@ def is_valid_zip(data: bytes) -> bool:
 # Fallos seguidos del camino rápido tras los cuales se desactiva en la sesión.
 _FAST_PATH_MAX_FAILURES = 2
 
+# Descargas fallidas seguidas con un token resuelto en el navegador tras las cuales se deja de
+# confiar en él y se vuelve a CapSolver. Un token que DIAN rechaza no debe repetirse sin fin.
+_INBROWSER_MAX_REJECTIONS = 2
+
 
 class PlaywrightBrowserClient:
     def __init__(self, representative: str = "", nit: str = "", timeout: int = 60000):
@@ -289,6 +293,10 @@ class BrowserDownloadSession:
         self._page = None
         # None = no probado; True/False = si el solver in-browser funciona en este entorno.
         self._inbrowser_works = None
+        # De dónde salió el último token ("inbrowser" | "capsolver") y cuántas descargas
+        # seguidas fallaron con uno resuelto en el navegador (ver `_note_download_outcome`).
+        self._captcha_source: Optional[str] = None
+        self._inbrowser_rejections = 0
         # Camino rápido de descarga (ver `download`): fetch directo con el primer token.
         # `_fast_primed` pasa a True cuando el flujo completo (navegación + fetch) logró bajar
         # un ZIP en esta sesión, señal de que cookies y WAF ya están en orden. Tras
@@ -479,6 +487,30 @@ class BrowserDownloadSession:
         """
         return self._page is not None and not self._page.is_closed()
 
+    def _note_download_outcome(self, ok: bool, timings: Optional[dict] = None) -> None:
+        """Registra de dónde vino el token de este intento y si la descarga lo aceptó.
+
+        Si el token se resolvió en el navegador y las descargas fallan `_INBROWSER_MAX_REJECTIONS`
+        veces seguidas, se deja de usarlo en la sesión y se vuelve a CapSolver, que es el
+        comportamiento anterior. Así un token que DIAN no acepta no se repite sin fin. Un fallo
+        ajeno al token (un documento que no existe, un WAF) también suma: la dirección del error
+        es siempre hacia lo conocido, nunca hacia dejar de descargar.
+        """
+        if timings is not None:
+            timings["token"] = self._captcha_source
+        if self._captcha_source != "inbrowser":
+            return
+        if ok:
+            self._inbrowser_rejections = 0
+            return
+        self._inbrowser_rejections += 1
+        if self._inbrowser_rejections >= _INBROWSER_MAX_REJECTIONS:
+            self._inbrowser_works = False
+            logger.warning(
+                "[Session] token in-browser desactivado tras %d descargas fallidas — se usará CapSolver",
+                self._inbrowser_rejections,
+            )
+
     def _ensure_alive(self, track_id: str) -> None:
         """Corta de inmediato si Chrome murió a media sesión.
 
@@ -572,6 +604,7 @@ class BrowserDownloadSession:
             if kind == VALID_ZIP and is_valid_zip(data):
                 logger.info("[Session] ZIP via nav: %d bytes (trackId=%.32s…)", len(data), track_id)
                 self._fast_primed = True
+                self._note_download_outcome(True, timings)
                 return data
 
             if kind == AUTH_LOST:
@@ -597,6 +630,7 @@ class BrowserDownloadSession:
                             track_id,
                         )
                         self._fast_primed = True
+                        self._note_download_outcome(True, timings)
                         return data2
                     last_reason = kind2
                 except Exception as e:
@@ -619,6 +653,7 @@ class BrowserDownloadSession:
                     DIAN_INVALID,
                 )
 
+            self._note_download_outcome(False, timings)
             logger.info(
                 "[Session] intento %d/%d sin ZIP (%s) trackId=%s",
                 attempt,
@@ -654,6 +689,7 @@ class BrowserDownloadSession:
                     data, kind = await self._strategy_inpage_fetch(url)
                 if kind == VALID_ZIP and is_valid_zip(data):
                     self._fast_failures = 0
+                    self._note_download_outcome(True, timings)
                     if timings is not None:
                         timings["path"] = "fast"
                     logger.info(
@@ -674,6 +710,7 @@ class BrowserDownloadSession:
             # `download` (lanza BROWSER_CRASHED para que el worker relance y reintente).
             return None
 
+        self._note_download_outcome(False, timings)
         self._fast_failures += 1
         self._fast_primed = False  # el flujo completo vuelve a "cebar" la sesión
         if self._fast_failures >= _FAST_PATH_MAX_FAILURES:
@@ -696,6 +733,7 @@ class BrowserDownloadSession:
             token = await self._turnstile_inbrowser()
             if token:
                 self._inbrowser_works = True
+                self._captcha_source = "inbrowser"
                 logger.info("[Session] token Turnstile in-browser (len=%d)", len(token))
                 return token
             # No funciona en este entorno: no reintentar in-browser el resto de la sesión.
@@ -705,6 +743,7 @@ class BrowserDownloadSession:
         if CAPSOLVER_API_KEY:
             token = await self._turnstile_capsolver()
             if token:
+                self._captcha_source = "capsolver"
                 logger.info("[Session] token Turnstile CapSolver (len=%d)", len(token))
                 return token
         return None
@@ -737,8 +776,16 @@ class BrowserDownloadSession:
                     type(te).__name__,
                 )
                 return None
+            # patchright ejecuta `evaluate` en un contexto AISLADO por defecto, donde no existe
+            # el `window.turnstile` que carga la página: el solver respondía NO_TURNSTILE en el
+            # 100 % de los casos aunque `wait_for_function` (mundo principal) sí lo veía, y
+            # todos los tokens acababan pagándose en CapSolver. El widget necesita el mundo
+            # principal. `TURNSTILE_MAIN_WORLD=false` devuelve el comportamiento anterior.
+            main_world = os.getenv("TURNSTILE_MAIN_WORLD", "true").lower() != "false"
             token = await self._page.evaluate(
-                _TURNSTILE_SOLVE_JS, [TURNSTILE_SITEKEY, wait_s * 1000]
+                _TURNSTILE_SOLVE_JS,
+                [TURNSTILE_SITEKEY, wait_s * 1000],
+                isolated_context=not main_world,
             )
             if token and not str(token).startswith(("ERR", "TIMEOUT", "NO_")):
                 return token

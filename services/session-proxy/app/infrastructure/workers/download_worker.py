@@ -53,6 +53,7 @@ def _log_doc_metric(
         notify_ms=timings.get("notify_ms", 0),
         attempts=timings.get("attempts", 0),
         path=timings.get("path"),
+        token=timings.get("token"),
         zip_bytes=zip_bytes,
     )
 
