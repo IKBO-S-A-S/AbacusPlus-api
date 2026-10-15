@@ -882,7 +882,11 @@ class SuggestRetentionsUseCase:
         try:
             rates = await self._catalog.get_retention_fuente_rates()
         except Exception as exc:
-            logger.warning("No se pudieron obtener las tasas de retención: %s", exc)
+            # Con traza completa: un fallo de autenticación o de red aquí deja al modelo
+            # decidiendo sin la tabla oficial, y no debe pasar desapercibido (RF-08).
+            logger.warning(
+                "No se pudieron obtener las tasas de retención: %s", exc, exc_info=True
+            )
             return []
         return [
             {
