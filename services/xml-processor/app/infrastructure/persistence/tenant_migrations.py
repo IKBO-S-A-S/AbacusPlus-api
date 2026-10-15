@@ -166,12 +166,6 @@ TENANT_MIGRATIONS: tuple[str, ...] = (
     """,
     # La tabla se consulta por estado en cada carga de la vista y en la selección de lotes.
     "CREATE INDEX IF NOT EXISTS ix_documents_status ON documents (status)",
-    # La descarga desde la DIAN pregunta, antes de encolar, cuáles de los CUFE del rango ya
-    # están guardados (`get_complete_cufes`, hasta 500 por consulta). Sin este índice cada
-    # consulta recorre la tabla entera: medido con 50.000 documentos, 670 ms frente a 1,8 ms
-    # con índice. No es único a propósito: `cufe` admite NULL y la deduplicación sigue siendo
-    # por número de documento.
-    "CREATE INDEX IF NOT EXISTS ix_documents_cufe ON documents (cufe)",
     # ── RF-08 · ReteICA por concepto ──────────────────────────────────────────
     #
     # La tarifa de ReteICA la fija el CONCEPTO de la operación (compra, servicios, honorarios,
@@ -404,6 +398,12 @@ TENANT_MIGRATIONS: tuple[str, ...] = (
     "DEFAULT '{}'::jsonb",
     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS xml_storage_locations JSONB NOT NULL "
     "DEFAULT '{}'::jsonb",
+    # La descarga desde la DIAN pregunta, antes de encolar, cuáles de los CUFE del rango ya
+    # están guardados (`get_complete_cufes`, hasta 500 por consulta). Sin este índice cada
+    # consulta recorre la tabla entera: medido con 50.000 documentos, 670 ms frente a 1,8 ms
+    # con índice. No es único a propósito: `cufe` admite NULL y la deduplicación sigue siendo
+    # por número de documento.
+    "CREATE INDEX IF NOT EXISTS ix_documents_cufe ON documents (cufe)",
 )
 
 
