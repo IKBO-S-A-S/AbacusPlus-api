@@ -2,6 +2,7 @@ import pytest
 from app.infrastructure.browser import playwright_client as pc
 from app.infrastructure.browser.playwright_client import (
     AZURE_WAF,
+    BROWSER_CRASHED,
     EMPTY_OR_HTML,
     VALID_ZIP,
     BrowserDownloadSession,
@@ -13,6 +14,10 @@ ZIP = b"PK\x03\x04contenido"
 
 class _Page:
     url = "https://portal.example.com/Document/Received"
+    closed = False
+
+    def is_closed(self):
+        return self.closed
 
 
 class FakeSession(BrowserDownloadSession):
@@ -153,3 +158,57 @@ async def test_sin_zip_en_ningun_camino_sigue_fallando_como_antes():
         await s.download("a")
 
     assert exc.value.kind == EMPTY_OR_HTML
+
+
+class TestNavegadorCaido:
+    """Si Chrome muere a media descarga no tiene sentido seguir reintentando sobre él."""
+
+    @pytest.mark.asyncio
+    async def test_si_muere_durante_la_navegacion_se_corta_sin_gastar_mas_tokens(self):
+        s = FakeSession(fetch_results=[(ZIP, VALID_ZIP)])
+
+        async def _nav_que_mata_chrome(url):
+            s._page.closed = True
+            return b"", EMPTY_OR_HTML
+
+        s._strategy_nav_download = _nav_que_mata_chrome
+
+        with pytest.raises(DianDownloadError) as exc:
+            await s.download("a")
+
+        assert exc.value.kind == BROWSER_CRASHED
+        assert s.tokens == 1 and s.fetch_calls == 0  # ni segundo token ni fetch
+
+    @pytest.mark.asyncio
+    async def test_si_muere_durante_el_fetch_no_agota_los_tres_intentos(self):
+        s = FakeSession(fetch_results=[])
+        timings = {}
+
+        async def _fetch_que_mata_chrome(url):
+            s._page.closed = True
+            raise RuntimeError("Target page, context or browser has been closed")
+
+        s._strategy_inpage_fetch = _fetch_que_mata_chrome
+
+        with pytest.raises(DianDownloadError) as exc:
+            await s.download("a", timings)
+
+        assert exc.value.kind == BROWSER_CRASHED
+        assert timings["attempts"] == 1
+
+    @pytest.mark.asyncio
+    async def test_un_crash_en_el_camino_rapido_no_cuenta_como_fallo_suyo(self):
+        s = FakeSession(fetch_results=[])
+        s._fast_primed = True
+
+        async def _fetch_que_mata_chrome(url):
+            s._page.closed = True
+            raise RuntimeError("Target page, context or browser has been closed")
+
+        s._strategy_inpage_fetch = _fetch_que_mata_chrome
+
+        with pytest.raises(DianDownloadError) as exc:
+            await s.download("a")
+
+        assert exc.value.kind == BROWSER_CRASHED
+        assert s._fast_failures == 0 and s._fast_enabled is True

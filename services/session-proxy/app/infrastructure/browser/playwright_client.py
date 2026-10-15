@@ -48,6 +48,7 @@ CLOUDFLARE = "CLOUDFLARE"
 DIAN_INVALID = "DIAN_INVALID"
 AUTH_LOST = "AUTH_LOST"
 EMPTY_OR_HTML = "EMPTY_OR_HTML"
+BROWSER_CRASHED = "BROWSER_CRASHED"
 
 # Firmas de archivo ZIP: local file header, empty archive, spanned archive.
 _ZIP_MAGICS = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
@@ -478,6 +479,20 @@ class BrowserDownloadSession:
         """
         return self._page is not None and not self._page.is_closed()
 
+    def _ensure_alive(self, track_id: str) -> None:
+        """Corta de inmediato si Chrome murió a media sesión.
+
+        Con la página cerrada, cada intento posterior falla igual ("Target page, context or
+        browser has been closed"): en un caso real se gastaron los 3 intentos —con sus esperas
+        y 6 tokens de CapSolver, que se pagan— sobre un navegador que ya no existía, y el
+        documento terminó marcado como fallido aunque sí existía en la DIAN. Lanzando aquí, el
+        worker puede relanzar el navegador y reintentar el documento una vez.
+        """
+        if not self.is_alive():
+            raise DianDownloadError(
+                f"El navegador se cerró durante la descarga trackId={track_id}", BROWSER_CRASHED
+            )
+
     async def close(self) -> None:
         try:
             if self._context:
@@ -520,10 +535,13 @@ class BrowserDownloadSession:
                 timings["attempts"] = attempt
                 timings["path"] = "full"
 
+            self._ensure_alive(track_id)
+
             if self._fast_enabled and self._fast_primed:
                 data = await self._try_fast_path(track_id, timings)
                 if data is not None:
                     return data
+                self._ensure_alive(track_id)
 
             with timed("turnstile_ms", timings):
                 token = await self._solve_turnstile()
@@ -550,6 +568,7 @@ class BrowserDownloadSession:
             # valida el token Turnstile y envía el ZIP como Content-Disposition attachment.
             with timed("nav_ms", timings):
                 data, kind = await self._strategy_nav_download(download_url)
+            self._ensure_alive(track_id)
             if kind == VALID_ZIP and is_valid_zip(data):
                 logger.info("[Session] ZIP via nav: %d bytes (trackId=%.32s…)", len(data), track_id)
                 self._fast_primed = True
@@ -583,6 +602,7 @@ class BrowserDownloadSession:
                 except Exception as e:
                     logger.warning("[Session] fetch post-nav error: %s", e)
                     last_reason = "FETCH_ERROR"
+                    self._ensure_alive(track_id)
             else:
                 last_reason = kind
 
@@ -648,6 +668,11 @@ class BrowserDownloadSession:
         except Exception as e:
             reason = type(e).__name__
             logger.warning("[Session] camino rápido error: %s", e)
+
+        if not self.is_alive():
+            # El navegador murió: no es culpa del camino rápido, y quien decide qué hacer es
+            # `download` (lanza BROWSER_CRASHED para que el worker relance y reintente).
+            return None
 
         self._fast_failures += 1
         self._fast_primed = False  # el flujo completo vuelve a "cebar" la sesión

@@ -17,6 +17,7 @@ import shutil
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 import httpx
 from arq.connections import RedisSettings
@@ -139,6 +140,31 @@ async def _mark_failed(
     )
 
 
+async def _relaunch_session(
+    session: BrowserDownloadSession, auth_url: str, timeout_ms: int, max_retries: int
+) -> tuple[BrowserDownloadSession, Optional[Exception]]:
+    """Cierra la sesión caída, borra su perfil y abre una nueva.
+
+    Devuelve `(sesión, None)` si funcionó, o `(sesión_anterior, error)` si no se pudo abrir.
+
+    Chrome revienta cuando el perfil persistente acumula estado degradado (cache/shaders de
+    sesiones anteriores) tras muchos lanzamientos seguidos — confirmado en vivo: el mismo
+    batch pasó de 0/24 a 5/5 exitosos solo por borrar el perfil y arrancar de cero. Relanzar
+    reutilizando el MISMO directorio de perfil no arregla nada porque el estado corrupto sigue
+    ahí; hay que borrarlo antes de abrir la sesión nueva.
+    """
+    stale_profile_dir = session.profile_dir
+    with contextlib.suppress(Exception):
+        await session.close()
+    shutil.rmtree(stale_profile_dir, ignore_errors=True)
+    try:
+        new_session = BrowserDownloadSession(auth_url, timeout=timeout_ms, max_retries=max_retries)
+        await new_session.open()
+        return new_session, None
+    except Exception as exc:
+        return session, exc
+
+
 async def download_batch(
     ctx: dict,
     batch_id: str,
@@ -203,61 +229,66 @@ async def download_batch(
             track_id = str(track_id)
             doc_started = time.perf_counter()
             timings: dict = {}
-            try:
-                content = await session.download(track_id, timings=timings)
-            except DianDownloadError as e:
-                logger.warning("Documento %s no descargable: %s", track_id, e)
-                _log_doc_metric(batch_id, track_id, e.kind, doc_started, timings)
-                # `e.kind` ya trae el motivo específico (DIAN_INVALID, AUTH_LOST,
-                # FETCH_ERROR, CLOUDFLARE, AZURE_WAF...) — antes se perdía al convertir la
-                # excepción en texto plano, dejando al usuario sin forma de distinguir un
-                # documento que no existe en la DIAN de una caída transitoria de red.
-                await _mark_failed(progress, track_id, str(e), error_code=e.kind)
-                failed += 1
-                # Chrome revienta cuando el perfil persistente acumula estado degradado
-                # (cache/shaders de sesiones anteriores) tras muchos lanzamientos seguidos —
-                # confirmado en vivo: el mismo batch pasó de 0/24 a 5/5 exitosos solo por
-                # borrar el perfil y arrancar de cero. Relanzar reutilizando el MISMO
-                # directorio de perfil no arregla nada porque el estado corrupto sigue ahí;
-                # hay que borrarlo antes de abrir la sesión nueva.
-                if not session.is_alive():
-                    logger.warning(
-                        "Sesión de navegador caída tras %s — perfil probablemente degradado, "
-                        "borrando y relanzando para continuar el batch",
-                        track_id,
-                    )
-                    stale_profile_dir = session.profile_dir
-                    with contextlib.suppress(Exception):
-                        await session.close()
-                    shutil.rmtree(stale_profile_dir, ignore_errors=True)
-                    try:
-                        session = BrowserDownloadSession(
-                            auth_url, timeout=timeout_ms, max_retries=max_retries
+            content = None
+            abort_batch = False
+            # Dos pasadas como máximo: la segunda solo existe para reintentar un documento
+            # cuyo fallo fue que Chrome murió, no el documento en sí.
+            for pass_no in (1, 2):
+                try:
+                    content = await session.download(track_id, timings=timings)
+                    break
+                except DianDownloadError as e:
+                    logger.warning("Documento %s no descargable: %s", track_id, e)
+                    crashed = not session.is_alive()
+                    relaunch_error: Optional[Exception] = None
+                    if crashed:
+                        logger.warning(
+                            "Sesión de navegador caída tras %s — perfil probablemente degradado, "
+                            "borrando y relanzando para continuar el batch",
+                            track_id,
                         )
-                        await session.open()
-                    except Exception as reopen_exc:
+                        session, relaunch_error = await _relaunch_session(
+                            session, auth_url, timeout_ms, max_retries
+                        )
+                    if crashed and relaunch_error is None and pass_no == 1:
+                        # El documento no tuvo la culpa: se reintenta con el navegador nuevo.
+                        # Antes quedaba marcado como fallido aunque sí existía en la DIAN.
+                        logger.info("Reintentando %s con el navegador nuevo", track_id)
+                        continue
+                    _log_doc_metric(batch_id, track_id, e.kind, doc_started, timings)
+                    # `e.kind` ya trae el motivo específico (DIAN_INVALID, AUTH_LOST,
+                    # FETCH_ERROR, CLOUDFLARE, AZURE_WAF, BROWSER_CRASHED...) — antes se perdía
+                    # al convertir la excepción en texto plano, dejando al usuario sin forma de
+                    # distinguir un documento que no existe en la DIAN de una caída transitoria.
+                    await _mark_failed(progress, track_id, str(e), error_code=e.kind)
+                    failed += 1
+                    if relaunch_error is not None:
                         logger.error(
                             "No se pudo relanzar la sesión tras crash — abortando resto del batch: %s",
-                            reopen_exc,
+                            relaunch_error,
                         )
                         remaining = track_ids[track_ids.index(track_id) + 1 :]
                         for pending_id in remaining:
                             await _mark_failed(
                                 progress,
                                 str(pending_id),
-                                f"BROWSER_RELAUNCH_FAILED: {reopen_exc}",
+                                f"BROWSER_RELAUNCH_FAILED: {relaunch_error}",
                                 error_code="BROWSER_RELAUNCH_FAILED",
                             )
                         failed += len(remaining)
-                        break
-                continue
-            except Exception as e:
-                logger.error("Error inesperado descargando %s: %s", track_id, e)
-                _log_doc_metric(batch_id, track_id, type(e).__name__, doc_started, timings)
-                await _mark_failed(
-                    progress, track_id, f"{type(e).__name__}: {e}", error_code=type(e).__name__
-                )
-                failed += 1
+                        abort_batch = True
+                    break
+                except Exception as e:
+                    logger.error("Error inesperado descargando %s: %s", track_id, e)
+                    _log_doc_metric(batch_id, track_id, type(e).__name__, doc_started, timings)
+                    await _mark_failed(
+                        progress, track_id, f"{type(e).__name__}: {e}", error_code=type(e).__name__
+                    )
+                    failed += 1
+                    break
+            if abort_batch:
+                break
+            if content is None:
                 continue
 
             if not is_valid_zip(content):
