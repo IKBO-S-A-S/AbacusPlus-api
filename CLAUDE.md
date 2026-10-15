@@ -12,7 +12,7 @@ docker-compose up --build
 docker-compose up --build xml-processor
 
 # Ejecutar tests de un servicio
-docker run --rm -v "$(pwd)/services/xml-processor:/app" --workdir //app python:3.9-slim \
+docker run --rm -v "$(pwd)/services/xml-processor:/app" --workdir //app python:3.11-slim \
   bash -c "pip install -r requirements.txt -q && python -m pytest tests/ -v"
 
 # Instalar dependencias localmente (desarrollo)
@@ -82,11 +82,18 @@ api/
 │   ├── gateway/                # Puerto 8000 (entrada única)
 │   │   └── nginx.conf
 │   │
-│   ├── xml-processor/          # Puerto 8001
+│   ├── auth-service/           # Puerto 8008 (JWT RS256, tenants, usuarios)
+│   │   ├── app/
+│   │   │   ├── adapters/api/routers/   auth.py · tenants.py · users.py
+│   │   │   ├── application/            dto/ · use_cases/
+│   │   │   ├── domain/                 entities/ · exceptions/ · ports/
+│   │   │   └── infrastructure/         config/ · persistence/ · provisioning/
+│   │   ├── Dockerfile
+│   │   └── requirements.txt
 │   │
 │   ├── xml-processor/          # Puerto 8001
 │   │   ├── app/
-│   │   │   ├── adapters/api/routers/   xml.py · documents.py · receivers.py
+│   │   │   ├── adapters/api/routers/   xml.py · documents.py · document_taxes.py · receivers.py · issuers.py · catalog.py · batch.py · internal.py
 │   │   │   ├── application/use_cases/  process_xml.py · query_documents.py · query_receivers.py
 │   │   │   ├── application/dto/        document.py · receiver.py
 │   │   │   ├── domain/                 entities/ · exceptions/ · ports/ · value_objects/
@@ -447,6 +454,14 @@ xml-processor reconstruye el estado correcto: indexa los contabilizados y retira
 | POST | `/api/v1/integrations/chart-accounts/imports` | Importa plan de cuentas desde .xlsx |
 | POST | `/api/v1/integrations/purchase-invoice-parameters` | Guarda plantilla proveedor-agnóstica |
 | GET  | `/api/v1/integrations/purchase-invoice-parameters` | Lista plantillas (filtros: provider, account_key) |
+| GET·PUT | `/api/v1/integrations/fiscal-profile` | Perfil fiscal de la empresa (NIT, razón social, agente de ICA, autorretenedor) |
+| GET  | `/api/v1/integrations/siigo/fiscal-diagnosis` | Contraste de la configuración fiscal contra SIIGO |
+| GET  | `/api/v1/integrations/{taxes,payment-types,products,retentions}` | Catálogos locales (fuente 0 de impuestos) |
+| POST | `/api/v1/integrations/{taxes,payment-types,products,retentions}/imports` | Importa el catálogo desde .xlsx |
+| POST | `/api/v1/integrations/{taxes,payment-types,products,retentions}/siigo-syncs` | Sincroniza el catálogo desde SIIGO |
+| GET  | `/api/v1/integrations/{taxes,payment-types,products}/template` | Plantilla .xlsx de importación |
+| GET·PUT | `/api/v1/integrations/storage/{s3,sharepoint,naming-pattern}` | Destino de almacenamiento de PDF/XML (RF-03) y patrón de nombres |
+| POST | `/internal/provision-tenant` | Crea/migra las tablas del servicio en la base del tenant (`X-Internal-Secret`) |
 | GET  | `/health` | Health check |
 
 ## Infraestructura
@@ -455,10 +470,11 @@ xml-processor reconstruye el estado correcto: indexa los contabilizados y retira
 - Imagen: `pgvector/pgvector:pg16`
 - La extensión `vector` se habilita automáticamente vía `scripts/init-db.sql`
 - Driver: `psycopg2-binary`
-- Tabla de vectores: `document_chunks` con columna `embedding Vector(768)`
+- Tabla de vectores: `document_chunks` con columna `embedding Vector(1536)` (`EMBEDDING_DIMENSIONS` en `rag-service/.../models/chunk.py`, OpenAI `text-embedding-3-small`)
 - Búsqueda: operador coseno `<=>` de pgvector
 
-### Ollama (embeddings locales)
+### Ollama (embeddings locales, solo si no hay `OPENAI_API_KEY`)
+- La columna es de 1536 y Ollama produce 768: usarlo exige migrar la columna. Sin migrarla, la indexación falla con un mensaje explícito.
 - Imagen: `ollama/ollama` — contenedor `abacus_ollama`
 - Modelo: `nomic-embed-text` (768 dimensiones, multilingual)
 - El servicio `ollama-init` descarga el modelo automáticamente al primer `up`
@@ -475,20 +491,32 @@ xml-processor reconstruye el estado correcto: indexa los contabilizados y retira
 
 ## Testing
 
-Cada servicio tiene su propio directorio `tests/`.
-- **xml-processor**: usa SQLite in-memory (conftest.py). Cubre xml_parser, zip_handler, dian_dv, smart_match, nit, repositorio de documentos.
-- **rag-service**: mocks de repositorio y embedding service. No requiere PostgreSQL ni Ollama.
-- **llm-service**: mocks de AIService y RagClient. No requiere OpenAI ni rag-service.
+Cada servicio tiene su `tests/` (unitarios, con mocks o SQLite in-memory; no requieren
+PostgreSQL, Ollama ni OpenAI). Además, en la raíz: `tests/component/` (por servicio),
+`tests/contract/` (rag-service) y `tests/e2e/`. Los 7 workflows de `.github/workflows/`
+(lint, security, pr-checks, tests, contract, component, e2e) los ejecutan en CI.
+
+Cobertura desigual: **auth-service y gateway no tienen tests unitarios**. Al tocar auth-service,
+cubrir con `tests/component/auth-service/`.
 
 ```bash
-# Correr tests de rag-service
-docker run --rm -v "$(pwd)/services/rag-service:/app" --workdir //app python:3.9-slim \
-  bash -c "pip install -r requirements.txt -q && python -m pytest tests/ -v"
+# Todos los servicios (venv por servicio o contenedor python:3.12-slim)
+python scripts/run_tests.py local
+python scripts/run_tests.py docker --services xml-processor llm-service --fail-fast
 
-# Correr tests de llm-service
-docker run --rm -v "$(pwd)/services/llm-service:/app" --workdir //app python:3.9-slim \
-  bash -c "pip install -r requirements.txt -q && python -m pytest tests/ -v"
+# Un servicio a mano (las imágenes de los servicios usan python:3.11)
+docker run --rm -v "$(pwd)/services/xml-processor:/app" --workdir //app python:3.11-slim   bash -c "pip install -r requirements.txt -q && python -m pytest tests/ -v"
 ```
+
+## Agentes de revisión (`.claude/agents/`)
+
+Solo leen y reportan; invocarlos antes de dar un cambio por terminado.
+
+| Agente | Cuándo usarlo |
+|--------|---------------|
+| `auth-guard` | Cambios en `routers/`, `auth_dependency.py` o `nginx.conf`: `require_write`, tenant desde el token, `/internal/*` |
+| `accounting-safety` | Cambios en contabilización SIIGO (RF-05) o aprendizaje del RAG (RF-08): cerrojo, estados inciertos, auditoría append-only |
+| `test-runner` | Antes de decir "listo" o commitear: corre solo los tests de los servicios tocados |
 
 ## Variables de entorno (.env)
 
