@@ -512,6 +512,11 @@ async def _process_single_file(
 
     except Exception as e:
         timings["outcome"] = "error"
+        # Tras un error de base de datos la sesión queda inutilizable hasta el rollback: sin
+        # él, el intento de registrar el fallo fallaba también y el `suppress` lo tragaba, así
+        # que el ZIP iba a `errors/` sin dejar ninguna fila en `processing_logs`.
+        with contextlib.suppress(Exception):
+            db.rollback()
         with contextlib.suppress(Exception):
             log_repo = ProcessingLogRepository(db)
             log_repo.create(
