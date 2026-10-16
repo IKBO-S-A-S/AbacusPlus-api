@@ -111,7 +111,36 @@ class PublishDocumentFilesUseCase:
             "uploaded": uploaded,
             "skipped": skipped,
             "warnings": warnings,
+            "s3_verified": await self._s3_confirmed(document_id, storage.backends),
         }
+
+    async def _s3_confirmed(self, document_id: int, backends: list) -> bool:
+        """True solo si CADA archivo del documento está en S3 y se comprobó que existe.
+
+        Es la única señal que autoriza a borrar las copias locales. Se comprueba contra lo que
+        quedó guardado (no contra lo que se subió en esta ejecución), de modo que también vale
+        para un documento cuyo enlace ya existía y por eso no se volvió a subir. Si el tenant
+        no usa S3, si falta el enlace de algún archivo o si el objeto no coincide, devuelve
+        False: ante la duda el archivo se queda en disco.
+        """
+        s3 = next((b for b in backends if isinstance(b, S3StorageAdapter)), None)
+        if s3 is None:
+            return False
+        document = self._repo.get_by_id(document_id)
+        if document is None:
+            return False
+        verified_any = False
+        for data, locations in (
+            (document.pdf_data, document.pdf_storage_locations),
+            (document.xml_data, document.xml_storage_locations),
+        ):
+            if not data:
+                continue  # ese archivo no existe en el documento: nada que comprobar
+            location = (locations or {}).get(S3StorageAdapter.__name__)
+            if not location or not await s3.verify(location, len(data)):
+                return False
+            verified_any = True
+        return verified_any
 
     async def _publish(
         self,

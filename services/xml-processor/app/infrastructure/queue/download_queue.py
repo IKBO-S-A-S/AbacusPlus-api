@@ -19,6 +19,7 @@ from app.infrastructure.clients.rag_client import RagClient
 from app.infrastructure.config.database import SessionLocal
 from app.infrastructure.config.tenant_connection_manager import get_session_for_tenant
 from app.infrastructure.metrics import log_metric, timed
+from app.infrastructure.persistence.models.document import Document
 from app.infrastructure.persistence.models.processing_log import ProcessingLog
 from app.infrastructure.persistence.repositories.concept_repository import ConceptRepository
 from app.infrastructure.persistence.repositories.document_repository import DocumentRepository
@@ -144,43 +145,47 @@ def _extract_files_to_processed(
     return pdf_bytes, xml_bytes, pdf_path, xml_path
 
 
-def _is_cloud_backed(locations: dict) -> bool:
-    """True si el mapa de ubicaciones tiene algún backend que no sea el fallback local.
-
-    `resolve_storage` (RF-03) resuelve los backends de un tenant una sola vez para PDF y XML
-    por igual: si hay S3 y/o SharePoint configurados y activos se usan esos —nunca junto con
-    local—, y si no hay ninguno cae a `LocalStorageAdapter`. Por eso basta con mirar las
-    claves de un mapa para saber si el documento quedó respaldado en la nube.
-    """
-    return bool(locations) and any(k != "LocalStorageAdapter" for k in locations)
-
-
 def _finalize_local_files(
     file_path: Path,
     processed_dir: Path,
-    cloud_backed: bool,
+    *,
+    zip_deletable: bool,
+    s3_verified: bool = False,
     extracted_paths: tuple[Optional[Path], ...] = (),
 ) -> None:
-    """Decide qué hacer con el ZIP y las copias locales extraídas de él.
+    """Decide qué queda en disco tras procesar un ZIP.
 
-    Si el tenant no tiene S3 ni SharePoint configurados, el disco local ES el almacenamiento
-    definitivo del documento — se conserva todo, como hasta ahora. Si sí los tiene y la
-    publicación no reportó ningún warning, esas copias en disco son redundantes desde el
-    instante en que S3/SharePoint confirmaron la subida: guardarlas para siempre solo
-    acumula espacio sin ningún documento que no esté ya seguro en la nube.
+    El ZIP es solo el vehículo: su PDF y su XML ya están en la base de datos, así que se
+    borra siempre que eso esté confirmado (`zip_deletable`). Si no lo está, se conserva en
+    `processed/` para poder recuperar el contenido, como antes.
+
+    Las copias extraídas (XML y PDF sueltos) siguen otra regla: solo se borran cuando S3 las
+    tiene y se comprobó que existen (`s3_verified`). Si el tenant usa únicamente SharePoint,
+    o no usa nada en la nube, o la subida a S3 falló o no se pudo verificar, esa copia en
+    disco es el archivo y se queda.
     """
-    if not cloud_backed:
-        shutil.move(str(file_path), str(processed_dir / file_path.name))
-        return
+    if s3_verified:
+        for path in extracted_paths:
+            if path is not None:
+                with contextlib.suppress(Exception):
+                    path.unlink()
 
-    for path in extracted_paths:
-        if path is not None:
-            with contextlib.suppress(Exception):
-                path.unlink()
-    with contextlib.suppress(Exception):
-        file_path.unlink()
-    logger.info(
-        "ZIP y copias locales borrados tras confirmar subida a S3/SharePoint: %s", file_path.name
+    if zip_deletable:
+        with contextlib.suppress(Exception):
+            file_path.unlink()
+        logger.info("ZIP borrado tras guardar su PDF y su XML: %s", file_path.name)
+    else:
+        shutil.move(str(file_path), str(processed_dir / file_path.name))
+        logger.info("ZIP conservado en processed/ (contenido sin confirmar): %s", file_path.name)
+
+
+def _files_stored_in_db(db, document_id: int) -> bool:
+    """True si el XML oficial del documento ya está en la base (sin leer el archivo)."""
+    return (
+        db.query(Document.id)
+        .filter(Document.id == document_id, Document.xml_data.isnot(None))
+        .first()
+        is not None
     )
 
 
@@ -354,7 +359,7 @@ async def _process_single_file(
         # texto del contenedor — de lo contrario una caída de S3/SharePoint pasa inadvertida.
         storage_status: Optional[str] = None
         storage_error: Optional[str] = None
-        cloud_backed = False
+        s3_verified = False
 
         # Almacena el PDF y el XML oficiales de la DIAN (venían dentro del ZIP) ligados al
         # documento, para poder visualizarlos luego sin volver a la DIAN. Best-effort: si
@@ -378,19 +383,15 @@ async def _process_single_file(
                     publicacion = await PublishDocumentFilesUseCase(repo).execute(
                         result["document_id"], tenant_slug=tenant_slug
                     )
+                    # La copia local solo se borra con S3 verificado: la subida pudo "aceptarse"
+                    # sin que el objeto exista, y SharePoint por sí solo no basta (ver
+                    # `_finalize_local_files`).
+                    s3_verified = publicacion["s3_verified"]
                     if publicacion["warnings"]:
                         storage_status = "error"
                         storage_error = "; ".join(publicacion["warnings"])
                     elif publicacion["uploaded"]:
                         storage_status = "ok"
-                        # Solo se borra la copia local si CADA backend configurado aceptó la
-                        # subida (sin warnings) — con uno solo caído, la copia en disco sigue
-                        # siendo la única evidencia de ese archivo hasta el próximo reintento.
-                        refreshed = repo.get_by_id(result["document_id"])
-                        if refreshed is not None:
-                            cloud_backed = _is_cloud_backed(
-                                refreshed.pdf_storage_locations
-                            ) or _is_cloud_backed(refreshed.xml_storage_locations)
                     logger.info(
                         "Documento DIAN almacenado (id=%s, publicado en: %s)",
                         result["document_id"],
@@ -421,9 +422,13 @@ async def _process_single_file(
                 storage_error=storage_error,
             )
         )
-        _finalize_local_files(file_path, processed_dir, cloud_backed, (pdf_path, xml_path))
-        if not cloud_backed:
-            logger.info("ZIP procesado → XML: %s — movido a processed/", xml_filename)
+        _finalize_local_files(
+            file_path,
+            processed_dir,
+            zip_deletable=_files_stored_in_db(db, result["document_id"]),
+            s3_verified=s3_verified,
+            extracted_paths=(pdf_path, xml_path),
+        )
 
         if progress:
             await progress.mark_xml_done(job_id, "added", document_id=result["document_id"])
@@ -440,7 +445,7 @@ async def _process_single_file(
         acc_status, acc_error = None, None
         storage_status: Optional[str] = None
         storage_error: Optional[str] = None
-        cloud_backed = False
+        zip_deletable = False
         if existing_doc:
             # Backfill: si el documento ya existía pero aún no tenía el PDF/XML oficial,
             # los tomamos del ZIP (best-effort) y los almacenamos.
@@ -470,11 +475,6 @@ async def _process_single_file(
                         storage_error = "; ".join(publicacion["warnings"])
                     elif publicacion["uploaded"]:
                         storage_status = "ok"
-                        refreshed = backfill_repo.get_by_id(existing_doc.id)
-                        if refreshed is not None:
-                            cloud_backed = _is_cloud_backed(
-                                refreshed.pdf_storage_locations
-                            ) or _is_cloud_backed(refreshed.xml_storage_locations)
                     logger.info("PDF/XML oficial backfill en documento existente %s", doc_number)
             except Exception as ex:
                 db.rollback()
@@ -484,6 +484,12 @@ async def _process_single_file(
             with timed("accounting_ms", timings):
                 acc_status, acc_error = await auto_accounting.execute(
                     existing_doc.id, only_if_uncoded=True
+                )
+            # El ZIP sobra si el documento ya tiene su XML y su PDF (o el ZIP no traía PDF).
+            # Si falta algo que el ZIP sí tiene, se conserva: podría ser la única copia.
+            with contextlib.suppress(Exception):
+                zip_deletable = bool(existing_doc.xml_data) and (
+                    bool(existing_doc.pdf_data) or _read_pdf_from_zip(file_path) is None
                 )
 
         log_repo.create(
@@ -498,9 +504,7 @@ async def _process_single_file(
                 storage_error=storage_error,
             )
         )
-        _finalize_local_files(file_path, processed_dir, cloud_backed)
-        if not cloud_backed:
-            logger.info("ZIP duplicado → XML: %s — movido a processed/", xml_filename)
+        _finalize_local_files(file_path, processed_dir, zip_deletable=zip_deletable)
 
         if progress:
             await progress.mark_xml_done(

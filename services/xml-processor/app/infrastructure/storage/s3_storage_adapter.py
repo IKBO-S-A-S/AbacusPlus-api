@@ -35,3 +35,22 @@ class S3StorageAdapter(DocumentStoragePort):
             self._client.put_object, Bucket=self._bucket_name, Key=key, Body=content
         )
         return f"s3://{self._bucket_name}/{key}"
+
+    async def verify(self, location: str, expected_size: int) -> bool:
+        """True si el objeto existe en el bucket con exactamente `expected_size` bytes.
+
+        `put_object` devuelve sin error cuando S3 aceptó la petición, pero eso no prueba que el
+        archivo quedó donde se dijo. Esta comprobación (un HEAD, sin descargar nada) es la que
+        autoriza a borrar la copia local: si cualquier cosa falla, devuelve False y el archivo
+        se conserva.
+        """
+        prefix = f"s3://{self._bucket_name}/"
+        if not location.startswith(prefix):
+            return False
+        try:
+            head = await asyncio.to_thread(
+                self._client.head_object, Bucket=self._bucket_name, Key=location[len(prefix) :]
+            )
+        except Exception:
+            return False
+        return head.get("ContentLength") == expected_size
