@@ -183,7 +183,10 @@ class GetBatchStatusUseCase:
 
         now = datetime.now(timezone.utc)
         elapsed = round((now - started_at.replace(tzinfo=timezone.utc)).total_seconds(), 1)
-        is_done = all_finished and total > 0
+        # Un lote sin documentos (todos ya guardados, o ninguno descargable) no tiene nada que
+        # esperar: está terminado desde que se crea. Con `total > 0` como condición, ese lote
+        # nunca llegaba a `is_done` y la interfaz seguía consultándolo para siempre.
+        is_done = all_finished
 
         # Superficie de error de auth: todos los jobs fallaron con AUTH_FAILED
         auth_error: Optional[str] = None
