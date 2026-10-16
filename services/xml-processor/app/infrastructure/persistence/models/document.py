@@ -67,7 +67,7 @@ class Document(Base):
     # Responsabilidades fiscales del RECEPTOR (comprador) tomadas del RUT vía la factura
     # (cbc:TaxLevelCode). Definen si el comprador es agente de retención: si no lo es, no se
     # practica retención alguna, sin importar el vendedor. Códigos separados por ';'.
-    receiver_responsibilities = Column(String(100), nullable=True)
+    receiver_responsibilities = Column(String(255), nullable=True)
     subtotal = Column(Float, nullable=False)
     total_taxes = Column(Float, nullable=False)
     retefuente = Column(Float, nullable=True, default=0.0)

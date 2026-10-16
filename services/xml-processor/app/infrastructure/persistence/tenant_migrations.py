@@ -32,6 +32,23 @@ from sqlalchemy import text
 logger = logging.getLogger(__name__)
 
 # Orden significativo: cada sentencia puede depender de las anteriores.
+def _ampliar_varchar(tabla: str, columna: str, largo: int) -> str:
+    """Sentencia que ensancha una columna VARCHAR solo si hoy es más angosta que `largo`.
+
+    Ensanchar un VARCHAR en PostgreSQL no reescribe la tabla, y la condición evita volver a
+    tomar el bloqueo de la tabla en cada arranque. Si la tabla o la columna no existen, la
+    subconsulta devuelve NULL y no se hace nada. Los nombres son constantes de este módulo,
+    nunca datos de entrada.
+    """
+    return (
+        "DO $$ BEGIN IF (SELECT character_maximum_length FROM information_schema.columns "  # noqa: S608
+        f"WHERE table_schema = current_schema() AND table_name = '{tabla}' "
+        f"AND column_name = '{columna}') < {largo} "
+        f"THEN ALTER TABLE {tabla} ALTER COLUMN {columna} TYPE VARCHAR({largo}); "
+        "END IF; END $$"
+    )
+
+
 TENANT_MIGRATIONS: tuple[str, ...] = (
     # ── Catálogo de estados ────────────────────────────────────────────────────
     """
@@ -404,6 +421,19 @@ TENANT_MIGRATIONS: tuple[str, ...] = (
     # con índice. No es único a propósito: `cufe` admite NULL y la deduplicación sigue siendo
     # por número de documento.
     "CREATE INDEX IF NOT EXISTS ix_documents_cufe ON documents (cufe)",
+    # Anchos de los datos del tercero. `issuers`/`receivers` los tenían a 50/100 mientras que
+    # `documents` ya guarda esos mismos valores en 255/255/100, así que un emisor con razón
+    # social larga ("... S.A.S - EN REORGANIZACIÓN", 56 caracteres) hacía fallar el INSERT y
+    # el documento entero no se procesaba. `tipo_contribuyente` guarda TODAS las
+    # responsabilidades fiscales unidas por `;`, y con varias supera fácilmente los 50.
+    _ampliar_varchar("issuers", "name", 255),
+    _ampliar_varchar("issuers", "email", 255),
+    _ampliar_varchar("issuers", "phone", 100),
+    _ampliar_varchar("issuers", "tipo_contribuyente", 255),
+    _ampliar_varchar("receivers", "name", 255),
+    _ampliar_varchar("receivers", "email", 255),
+    _ampliar_varchar("receivers", "phone", 100),
+    _ampliar_varchar("documents", "receiver_responsibilities", 255),
 )
 
 
