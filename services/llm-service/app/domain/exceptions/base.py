@@ -10,6 +10,34 @@ class ValidationException(DomainException):
         super().__init__(message=message, code="VALIDATION_ERROR")
 
 
+class AIServiceNotConfiguredError(DomainException):
+    """El servicio no tiene una API key de OpenAI utilizable.
+
+    Es un problema de configuración del despliegue, no de la petición ni un fallo del
+    proveedor: se detecta antes de llamar a OpenAI para no devolver un 500 genérico.
+    """
+
+    MESSAGE = (
+        "El servicio de IA no está configurado: falta la variable de entorno OPENAI_API_KEY "
+        "en llm-service. Contacte al administrador."
+    )
+
+    def __init__(self, message: str = MESSAGE):
+        super().__init__(message=message, code="AI_NOT_CONFIGURED")
+
+
+class AIAuthenticationError(DomainException):
+    """OpenAI rechazó la API key configurada (401): inválida, revocada o sin permisos."""
+
+    MESSAGE = (
+        "OpenAI rechazó la API key configurada en llm-service. Verifique que OPENAI_API_KEY "
+        "sea válida y esté activa."
+    )
+
+    def __init__(self, message: str = MESSAGE):
+        super().__init__(message=message, code="AI_AUTHENTICATION_FAILED")
+
+
 class NoChartOfAccountsError(DomainException):
     """RF-08: no hay Plan Único de Cuentas cargado, así que no se sugieren cuentas.
 

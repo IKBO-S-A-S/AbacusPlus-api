@@ -3,8 +3,9 @@ import logging
 import os
 from typing import Any, Optional
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, AuthenticationError
 
+from app.domain.exceptions.base import AIAuthenticationError
 from app.domain.ports.services import AIServicePort
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,9 @@ class OpenAIService(AIServicePort):
 
         try:
             response = await self._client.chat.completions.create(**create_kwargs)
+        except AuthenticationError as exc:
+            logger.error("OpenAI rechazó la API key configurada: %s", exc)
+            raise AIAuthenticationError() from exc
         except Exception as exc:
             # Fallback: si el modelo o la cuenta no soportan json_schema, reintenta sin response_format.
             if json_schema is not None and "response_format" in create_kwargs:

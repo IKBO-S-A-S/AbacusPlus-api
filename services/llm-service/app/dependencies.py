@@ -9,6 +9,7 @@ from app.application.use_cases.analyze_with_ai import AnalyzeWithAIUseCase
 from app.application.use_cases.assign_account_codes import AssignAccountCodesUseCase
 from app.application.use_cases.query_with_rag import QueryWithRAGUseCase
 from app.application.use_cases.suggest_retentions import SuggestRetentionsUseCase
+from app.domain.exceptions.base import AIServiceNotConfiguredError
 from app.infrastructure.ai.openai_service import OpenAIService
 from app.infrastructure.clients.catalog_client import CatalogClient
 from app.infrastructure.clients.document_client import DocumentClient
@@ -24,7 +25,9 @@ load_dotenv()
 
 
 def get_openai_service() -> OpenAIService:
-    api_key = os.getenv("OPENAI_API_KEY", "")
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise AIServiceNotConfiguredError()
     return OpenAIService(api_key=api_key)
 
 

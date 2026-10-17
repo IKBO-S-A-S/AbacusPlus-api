@@ -13,6 +13,10 @@ STATUS_MAP = {
     # un fallo del servidor: el usuario debe cargar el catálogo antes de pedir sugerencias.
     "NO_CHART_OF_ACCOUNTS": 409,
     "NO_RETENTION_CATALOG": 409,
+    # Configuración del despliegue (falta o es inválida la API key de OpenAI): el servicio
+    # no puede atender la petición ahora mismo, y no es culpa del cliente.
+    "AI_NOT_CONFIGURED": 503,
+    "AI_AUTHENTICATION_FAILED": 503,
     "DOMAIN_ERROR": 500,
 }
 
