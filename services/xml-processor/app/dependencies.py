@@ -28,7 +28,11 @@ from app.application.use_cases.query_documents import (
     GetDocumentByIdUseCase,
     GetDocumentsByDateRangeUseCase,
 )
-from app.application.use_cases.query_issuers import GetIssuerByNitUseCase
+from app.application.use_cases.query_issuers import (
+    GetIssuerByNitUseCase,
+    ListIssuersUseCase,
+    UpdateIssuerUseCase,
+)
 from app.application.use_cases.query_receivers import GetAllReceiversUseCase
 from app.application.use_cases.reconcile_document import ReconcileDocumentUseCase
 from app.infrastructure.clients.integration_config_client import IntegrationConfigClient
@@ -114,6 +118,14 @@ def get_document_by_id_use_case(db: Session = Depends(get_tenant_db)) -> GetDocu
 
 def get_all_receivers_use_case(db: Session = Depends(get_tenant_db)) -> GetAllReceiversUseCase:
     return GetAllReceiversUseCase(receiver_repo=ReceiverRepository(db))
+
+
+def get_list_issuers_use_case(db: Session = Depends(get_tenant_db)) -> ListIssuersUseCase:
+    return ListIssuersUseCase(issuer_repo=IssuerRepository(db))
+
+
+def get_update_issuer_use_case(db: Session = Depends(get_tenant_db)) -> UpdateIssuerUseCase:
+    return UpdateIssuerUseCase(issuer_repo=IssuerRepository(db))
 
 
 def get_issuer_by_nit_use_case(db: Session = Depends(get_tenant_db)) -> GetIssuerByNitUseCase:

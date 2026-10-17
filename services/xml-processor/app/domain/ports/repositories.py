@@ -51,6 +51,20 @@ class IssuerRepositoryPort(ABC):
     @abstractmethod
     def create(self, issuer: object) -> object: ...
 
+    @abstractmethod
+    def search(self, q: Optional[str], limit: int, offset: int) -> tuple[list[object], int]: ...
+
+    @abstractmethod
+    def find_conflict(
+        self, issuer_id: int, name: Optional[str], email: Optional[str]
+    ) -> Optional[str]: ...
+
+    @abstractmethod
+    def payment_type_state(self, payment_id: int) -> Optional[bool]: ...
+
+    @abstractmethod
+    def update(self, issuer: object, fields: dict) -> object: ...
+
 
 class TaxRepositoryPort(ABC):
     @abstractmethod
