@@ -18,6 +18,7 @@ from app.domain.services.line_taxes import (
     impuesto_principal,
     total_de_impuestos,
 )
+from app.domain.services.payment_type_resolution import resolve_payment_type
 from app.domain.services.tax_resolution import resolver_impuesto
 from app.domain.services.xml_withholdings import extraer_retenciones_del_xml, total_retenido
 from app.domain.value_objects.document_status import DocumentStatus
@@ -89,10 +90,9 @@ class ProcessXmlUseCase:
         issuer = self._ensure_issuer(xml_data)
         self._ensure_receiver(xml_data)
         self._ensure_tax(xml_data)
-        document = self._build_document(
-            xml_data, filename, payment_type_id=issuer.payment_id if issuer else None
-        )
+        document = self._build_document(xml_data, filename)
         self._build_details(document, xml_data, taxes=taxes)
+        document.payment_type_id = self._resolve_payment_type(issuer, document)
 
         # RF-03: conserva el respaldo del documento igual que la descarga automática desde la
         # DIAN (`infrastructure/queue/download_queue.py`). Sin esto, un documento cargado a
@@ -173,6 +173,35 @@ class ProcessXmlUseCase:
                 tipo_contribuyente=emisor.get("regimen") or None,
             )
         )
+
+    def _resolve_payment_type(self, issuer: Issuer, document: Document) -> Optional[int]:
+        """Medio de pago del documento: tercero, luego su historial, luego documentos parecidos.
+
+        Es best-effort: un fallo de consulta deja el documento sin medio de pago, que el
+        contador puede asignar, en vez de perder un documento ya parseado.
+        """
+        try:
+            resolution = resolve_payment_type(
+                issuer.payment_id if issuer else None,
+                lambda: self.document_repo.find_most_frequent_payment_type(document.issuer_nit),
+                lambda: self.document_repo.find_most_frequent_payment_type_for_similar(
+                    document.issuer_nit, [d.description for d in document.details]
+                ),
+            )
+            if resolution is None:
+                return None
+            if resolution.persist_on_issuer and issuer is not None:
+                self.issuer_repo.update(issuer, {"payment_id": resolution.payment_type_id})
+            logger.info(
+                "Medio de pago %s para %s (origen: %s)",
+                resolution.payment_type_id,
+                document.document_number,
+                resolution.source,
+            )
+            return resolution.payment_type_id
+        except Exception:
+            logger.warning("No se pudo resolver el medio de pago del documento", exc_info=True)
+            return None
 
     def _ensure_receiver(self, xml_data: dict) -> None:
         receptor = xml_data.get("receptor", {})

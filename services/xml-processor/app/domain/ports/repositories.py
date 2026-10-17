@@ -19,6 +19,14 @@ class DocumentRepositoryPort(ABC):
     def create(self, document: object) -> object: ...
 
     @abstractmethod
+    def find_most_frequent_payment_type(self, issuer_nit: str) -> Optional[int]: ...
+
+    @abstractmethod
+    def find_most_frequent_payment_type_for_similar(
+        self, issuer_nit: str, descriptions: list[str]
+    ) -> Optional[int]: ...
+
+    @abstractmethod
     def get_status(self, document_id: int) -> Optional[int]: ...
 
     @abstractmethod

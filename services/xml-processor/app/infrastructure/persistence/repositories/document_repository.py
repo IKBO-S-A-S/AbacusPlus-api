@@ -2,11 +2,13 @@ from collections import Counter
 from datetime import date, datetime, timezone
 from typing import Optional
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, defer, selectinload
 
 from app.domain.ports.repositories import DocumentRepositoryPort
 from app.domain.value_objects.document_status import DocumentStatus
 from app.infrastructure.persistence.models.document import Document, DocumentDetail
+from app.infrastructure.persistence.models.integration_payment_type import IntegrationPaymentType
 
 
 class DocumentRepository(DocumentRepositoryPort):
@@ -549,6 +551,47 @@ class DocumentRepository(DocumentRepositoryPort):
             .first()
             is not None
         )
+
+    def _accounted_payment_types(self):
+        """Medios de pago activos de documentos contabilizados (el historial confiable)."""
+        return (
+            self.db.query(Document.id, Document.payment_type_id)
+            .join(IntegrationPaymentType, IntegrationPaymentType.id == Document.payment_type_id)
+            .filter(
+                Document.status == DocumentStatus.CONTABILIZADA,
+                IntegrationPaymentType.active.is_(True),
+            )
+        )
+
+    def find_most_frequent_payment_type(self, issuer_nit: str) -> Optional[int]:
+        """Medio de pago más usado en los documentos contabilizados del mismo emisor."""
+        rows = self._accounted_payment_types().filter(Document.issuer_nit == issuer_nit).all()
+        if not rows:
+            return None
+        return Counter(r.payment_type_id for r in rows).most_common(1)[0][0]
+
+    def find_most_frequent_payment_type_for_similar(
+        self, issuer_nit: str, descriptions: list[str]
+    ) -> Optional[int]:
+        """Medio de pago más usado en documentos contabilizados de OTROS emisores cuyas
+        líneas se parecen (misma palabra clave que el centro de costo). None sin historial."""
+        words = {w for d in descriptions for w in [next((x for x in d.split() if len(x) > 3), "")] if w}
+        if not words:
+            return None
+        rows = (
+            self._accounted_payment_types()
+            .join(DocumentDetail, DocumentDetail.document_id == Document.id)
+            .filter(
+                Document.issuer_nit != issuer_nit,
+                or_(*[DocumentDetail.description.ilike(f"%{w}%") for w in words]),
+            )
+            .all()
+        )
+        # Un documento con varias líneas parecidas aparece varias veces: cuenta una sola.
+        por_documento = {r.id: r.payment_type_id for r in rows}
+        if not por_documento:
+            return None
+        return Counter(por_documento.values()).most_common(1)[0][0]
 
     def find_most_frequent_cost_center(
         self, issuer_nit: str, description: str
