@@ -22,16 +22,23 @@ router = APIRouter()
         "Este endpoint es agnostico al proveedor: puede almacenar SIIGO, Odoo, Alegra "
         "u otras plataformas futuras usando `provider`, `account_key`, `auth_scheme` "
         "y `extra_config` para parametros propios de cada adaptador.\n\n"
-        "Para `provider=siigo`, tras guardar se valida la conexion autenticando contra SIIGO. "
-        "El resultado viaja en `connection`; un fallo **no** impide guardar, solo avisa al "
-        "usuario de que las credenciales no funcionan. Otros proveedores no se validan "
+        "Para `provider=siigo`, antes de guardar se autentica contra SIIGO. Si no se obtiene "
+        "token, responde 400 con el motivo y **no** guarda ni modifica nada. Si autentica, "
+        "guarda y el resultado viaja en `connection`. Otros proveedores no se validan "
         "(`connection` queda en `null`)."
     ),
     response_description=(
         "Credencial registrada sin exponer secretos y, para SIIGO, el resultado de la "
         "validacion de conexion en `connection`."
     ),
-    responses={400: {"description": "Payload invalido o proveedor vacio."}},
+    responses={
+        400: {
+            "description": (
+                "Payload invalido, proveedor vacio o SIIGO no acepto las credenciales "
+                "(no se guarda)."
+            )
+        }
+    },
 )
 def upsert_credentials(
     request: CredentialUpsertRequest,

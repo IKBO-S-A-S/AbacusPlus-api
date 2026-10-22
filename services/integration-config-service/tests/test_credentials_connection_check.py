@@ -1,8 +1,14 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app.application.dto.integration import CredentialUpsertRequest
 from app.application.use_cases.manage_credentials import ManageCredentialsUseCase
-from app.domain.exceptions.base import ExternalAuthException, ExternalServiceException
+from app.domain.exceptions.base import (
+    ExternalAuthException,
+    ExternalServiceException,
+    ValidationException,
+)
 from app.infrastructure.clients.siigo_connection_checker import (
     SiigoConnectionChecker,
     SiigoConnectionResult,
@@ -49,13 +55,13 @@ class TestUpsertCredentials:
         assert connection.ok
         assert repo.save_token.call_args.kwargs["access_token"] == "tok"
 
-    def test_siigo_failure_still_saves(self):
+    def test_siigo_failure_does_not_save(self):
         repo, checker = MagicMock(), MagicMock()
         checker.check.return_value = SiigoConnectionResult(ok=False, message="mal")
-        credential, connection = ManageCredentialsUseCase(repo, checker).upsert(_request())
-        repo.upsert.assert_called_once()
+        with pytest.raises(ValidationException, match="mal"):
+            ManageCredentialsUseCase(repo, checker).upsert(_request())
+        repo.upsert.assert_not_called()
         repo.save_token.assert_not_called()
-        assert credential is repo.upsert.return_value and not connection.ok
 
     def test_other_provider_not_validated(self):
         repo, checker = MagicMock(), MagicMock()
