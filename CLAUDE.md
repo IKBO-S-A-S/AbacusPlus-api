@@ -319,6 +319,7 @@ xml-processor reconstruye el estado correcto: indexa los contabilizados y retira
 | GET  | `/api/v1/receivers` | xml-processor |
 | GET  | `/api/v1/issuers/{nit}` | xml-processor |
 | GET  | `/api/v1/catalog/*` | xml-processor |
+| GET  | `/api/v1/dashboard/*` | xml-processor |
 | POST | `/api/v1/batch-jobs/*` | xml-processor |
 | GET  | `/api/v1/batch-logs` | xml-processor |
 | POST | `/api/v1/query` | llm-service |
@@ -374,6 +375,9 @@ xml-processor reconstruye el estado correcto: indexa los contabilizados y retira
 | GET  | `/api/v1/catalog/retention-fuente-rates` | Tasas retención en la fuente |
 | GET  | `/api/v1/catalog/retention-ica-rates` | Tasas retención ICA. **Fuente única de los municipios donde la empresa retiene ICA**. Clave `(municipio, concepto)`: un municipio trae una fila por concepto (servicios, compras, honorarios…), porque la tarifa la fija la actividad. Cada fila lleva además su `minimum_base_uvt`: el ICA es territorial y cada municipio fija su propio tope (Bogotá 4/27, Cali 3/15, Bucaramanga 25/50) |
 | GET  | `/api/v1/catalog/taxes` | Catálogo de impuestos |
+| GET  | `/api/v1/dashboard/executive` | Dashboard ejecutivo: KPIs del periodo vs. periodo anterior, con meta y semáforo |
+| GET  | `/api/v1/dashboard/operations` | Dashboard de operación: estados, embudo, serie temporal y backlog por antigüedad |
+| GET  | `/api/v1/dashboard/documents` | Drill-down paginado: documentos detrás de un indicador (`?indicator=`) |
 | POST | `/api/v1/catalog/retention-rates/imports` | Importa tasas desde .xlsx. `sheet=fuente\|ica` acota la importación a una hoja y rechaza el archivo si no la trae — evita que subir el archivo equivocado cargue la tabla que no es |
 | GET  | `/api/v1/catalog/retention-rates/template` | Plantilla .xlsx. `?sheet=fuente\|ica` devuelve solo esa hoja (cada tabla de la interfaz descarga la suya) |
 | POST | `/api/v1/batch-jobs/downloads` | Encolar ZIPs del directorio downloads |
@@ -565,6 +569,10 @@ REDIS_URL=redis://redis:6379
 
 # integration-config-service (usado por xml-processor y llm-service)
 INTEGRATION_CONFIG_URL=http://integration-config-service:8007
+
+# Dashboard de indicadores (xml-processor), opcionales. Diccionario en docs/dashboard-indicadores.md
+# DASHBOARD_TARGETS={"accounting_rate":{"meta":90,"alerta":75}}
+# DASHBOARD_TIMEZONE=America/Bogota
 
 # RF-05 · cola de contabilización (xml-processor). Ninguno es obligatorio: los valores por
 # defecto son conservadores y equivalen al comportamiento secuencial.

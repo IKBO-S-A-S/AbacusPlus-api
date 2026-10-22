@@ -19,6 +19,7 @@ from app.application.use_cases.approve_document import (
     CausarDocumentUseCase,
     UnapproveDocumentUseCase,
 )
+from app.application.use_cases.dashboard import DashboardUseCase
 from app.application.use_cases.get_document_detail import GetDocumentDetailUseCase
 from app.application.use_cases.import_retention_rates import ImportRetentionRatesUseCase
 from app.application.use_cases.process_downloads import ProcessDownloadsUseCase
@@ -40,12 +41,14 @@ from app.infrastructure.clients.llm_client import LlmClient
 from app.infrastructure.clients.rag_client import RagClient
 from app.infrastructure.clients.rag_knowledge_client import build_rag_knowledge_client
 from app.infrastructure.config.auth_dependency import TokenData, get_tenant_db, get_token_data
+from app.infrastructure.config.dashboard_settings import get_timezone, load_targets, today_local
 from app.infrastructure.persistence.repositories.accounting_job_repository import (
     AccountingAuditRepository,
     AccountingJobRepository,
 )
 from app.infrastructure.persistence.repositories.concept_repository import ConceptRepository
 from app.infrastructure.persistence.repositories.cost_center_repository import CostCenterRepository
+from app.infrastructure.persistence.repositories.dashboard_repository import DashboardRepository
 from app.infrastructure.persistence.repositories.document_repository import DocumentRepository
 from app.infrastructure.persistence.repositories.document_tax_repository import (
     DocumentTaxRepository,
@@ -339,3 +342,11 @@ def get_document_detail_use_case(
     db: Session = Depends(get_tenant_db),
 ) -> GetDocumentDetailUseCase:
     return GetDocumentDetailUseCase(document_repo=DocumentRepository(db))
+
+
+def get_dashboard_use_case(db: Session = Depends(get_tenant_db)) -> DashboardUseCase:
+    return DashboardUseCase(
+        repo=DashboardRepository(db, timezone=get_timezone()),
+        targets=load_targets(),
+        today=today_local,
+    )

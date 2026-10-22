@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from app.adapters.api.error_handlers import domain_exception_handler, unhandled_exception_handler
 from app.adapters.api.routers.batch import router as batch_router
 from app.adapters.api.routers.catalog import router as catalog_router
+from app.adapters.api.routers.dashboard import router as dashboard_router
 from app.adapters.api.routers.document_taxes import router as document_taxes_router
 from app.adapters.api.routers.documents import router as documents_router
 from app.adapters.api.routers.internal import router as internal_router
@@ -87,6 +88,7 @@ app.include_router(document_taxes_router, prefix="/api/v1", tags=["document-taxe
 app.include_router(receivers_router, prefix="/api/v1", tags=["receivers"])
 app.include_router(issuers_router, prefix="/api/v1", tags=["issuers"])
 app.include_router(catalog_router, prefix="/api/v1", tags=["catalog"])
+app.include_router(dashboard_router, prefix="/api/v1", tags=["dashboard"])
 app.include_router(batch_router, prefix="/api/v1", tags=["batch"])
 app.include_router(internal_router)  # no prefix — path is /internal/provision-tenant
 
