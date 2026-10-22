@@ -18,25 +18,27 @@ from pydantic import BaseModel, Field
 class PurchaseInvoiceItem(BaseModel):
     """Una línea de la factura de compra.
 
-    En el alcance del proyecto el detalle se maneja **únicamente a nivel de cuenta**, así que
-    `type` es «Account» y `code` es el código de la cuenta PUC asignada a la línea. SIIGO
-    admite además «Product» y «FixedAsset», que quedan fuera del MVP.
+    Una línea es de **cuenta** (`type` «Account», `code` = código PUC) o de **producto**
+    (`type` «Product», `code` = código del producto en SIIGO). Un mismo documento puede mezclar
+    ambas: lo decide el tercero y la línea (ver `item_assignment_mode` en el xml-processor).
+    «FixedAsset» lo admite SIIGO pero ningún flujo de este sistema lo produce hoy.
     """
 
     type: str = Field(
         "Account",
         description=(
             "Tipo de ítem. SIIGO solo admite 'Product', 'FixedAsset' o 'Account'. "
-            "El MVP trabaja a nivel de cuenta contable."
+            "'Account' lleva una cuenta contable; 'Product', un producto del catálogo."
         ),
         examples=["Account"],
     )
     code: str = Field(
         ...,
         description=(
-            "Código de la cuenta contable (PUC) asignada a la línea. Debe existir y estar "
-            "activa en SIIGO Nube. SIIGO rechaza cuentas ligadas a grupos de inventario, "
-            "activos fijos o impuestos."
+            "Con `type=Account`: código de la cuenta contable (PUC) asignada a la línea. Debe "
+            "existir y estar activa en SIIGO Nube. SIIGO rechaza cuentas ligadas a grupos de "
+            "inventario, activos fijos o impuestos. Con `type=Product`: código del producto en "
+            "SIIGO."
         ),
         examples=["51951001"],
     )

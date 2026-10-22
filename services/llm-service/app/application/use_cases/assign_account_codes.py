@@ -3,10 +3,16 @@ import json
 import logging
 import os
 import re
+from dataclasses import dataclass, field
 from typing import Optional
 
 from app.domain.exceptions.base import NoChartOfAccountsError
 from app.domain.ports.services import AIServicePort
+from app.domain.services.product_matching import (
+    candidatos_por_linea,
+    debe_buscar_productos,
+    resolver_producto,
+)
 from app.infrastructure.clients.document_client import DocumentClient
 from app.infrastructure.clients.integration_config_client import IntegrationConfigClient
 from app.infrastructure.persistence.repositories.system_prompt_repository import (
@@ -143,8 +149,59 @@ REGLAS ESTRICTAS:
 """
 
 
+# Prompt propio de la detección de productos, y no una ampliación del prompt de cuentas, por
+# dos razones. La primera: el prompt de cuentas vive en la base de cada empresa
+# (`system_prompts`) y los ya guardados prohíben «campos adicionales» en el JSON, así que
+# pedirle uno nuevo contradiría su propio prompt de sistema. La segunda: cambiar de modo en un
+# tercero no debe tocar en nada el flujo de cuentas, que es el que ya funciona.
+_PRODUCT_SYSTEM_PROMPT = """\
+Eres un contador público colombiano que causa facturas de compra electrónicas. Para cada ítem \
+decides si debe registrarse como un PRODUCTO de inventario del catálogo de la empresa o no.
+
+Un ítem va por producto SOLO si se cumplen las dos condiciones:
+1. Es un bien físico que la empresa compra para tener en inventario o consumir en su \
+operación: mercancía, materia prima, insumos, repuestos, materiales.
+2. Uno de sus "candidatos" es ese mismo artículo: misma clase de objeto y coinciden los \
+rasgos que lo distinguen (medida, material, referencia, presentación, marca).
+
+NO van por producto, aunque algún candidato se parezca en el nombre: servicios, honorarios, \
+fletes, arrendamientos, servicios públicos, licencias, seguros, gastos en general y activos \
+fijos. Para ellos responde null.
+
+Ante la duda, responde null. Equivocarse hacia la cuenta es barato: el contador la corrige y \
+el documento se causa igual. Un producto equivocado altera el inventario.
+
+Solo puedes usar códigos de la lista "candidatos" de ESE ítem. Nunca inventes un código ni \
+uses el de otro ítem.
+
+Responde ÚNICAMENTE con un objeto JSON, sin explicaciones ni markdown, con esta estructura \
+exacta e incluyendo todos los ítems recibidos:
+{"items":[{"item_id":<id exacto recibido>,"product_code":"<código del candidato>"|null}]}\
+"""
+
+
+@dataclass(frozen=True)
+class _ProductPlan:
+    """Qué se sabe de la detección de productos para un documento.
+
+    - `ran`: se pudo evaluar de verdad (se conoce al tercero y el catálogo se consultó sin
+      error, esté vacío o no). Es lo que autoriza al xml-processor a fijar el modo del tercero.
+    - `candidates`: por `detail_id`, los productos del catálogo que se parecen a la línea.
+      Vacío cuando no hay nada que preguntarle al modelo.
+    """
+
+    ran: bool = False
+    candidates: dict = field(default_factory=dict)
+
+
 class AssignAccountCodesUseCase:
-    """Asigna cuentas PUC a cada línea de detalle de un documento usando el LLM."""
+    """Asigna cuentas PUC —o productos del catálogo— a cada línea de un documento con el LLM.
+
+    Siempre se asigna una cuenta a cada línea. Si el tercero no está forzado a cuenta y hay
+    catálogo de productos, además se pregunta al modelo qué líneas son un producto del
+    catálogo: esas pasan a `type="Product"` y el resto conserva su cuenta, así que un mismo
+    documento puede mezclar ambas.
+    """
 
     def __init__(
         self,
@@ -196,10 +253,11 @@ class AssignAccountCodesUseCase:
         # catálogos son configuración de la empresa y el historial sale del RAG. Se piden a la
         # vez para no encadenar tres latencias antes de la única llamada que de verdad cuesta,
         # la del modelo. El historial iba después de los catálogos sin necesitarlos.
-        chart_accounts, cost_centers, history = await asyncio.gather(
+        chart_accounts, cost_centers, history, issuer = await asyncio.gather(
             self._integration_config_client.get_chart_accounts(),
             self._integration_config_client.get_cost_centers(),
             self._issuer_history_context(document),
+            self._document_client.get_issuer(str(document.get("issuer_nit") or "")),
         )
         puc_index = {acc["code"]: acc for acc in chart_accounts}
         cost_centers_by_id = {
@@ -261,15 +319,38 @@ class AssignAccountCodesUseCase:
         # precedente.
         user_prompt = self._build_prompt(document, details, candidates, cost_centers_by_id, history)
 
-        ai_response = await self._ai.complete(
-            prompt=user_prompt,
-            system_prompt=system_prompt,
-        )
+        # Productos: solo si el tercero no está forzado a cuenta y hay catálogo que ofrecer.
+        product_plan = await self._plan_products(details, issuer)
+
+        account_call = self._ai.complete(prompt=user_prompt, system_prompt=system_prompt)
+        if product_plan.candidates:
+            # Independientes entre sí: la pregunta de productos no necesita la cuenta, que se
+            # pide para todas las líneas como respaldo. En paralelo no suman latencias.
+            ai_response, (product_codes, product_warnings, product_ok) = await asyncio.gather(
+                account_call,
+                self._assign_products(document, details, product_plan.candidates),
+            )
+            warnings.extend(product_warnings)
+        else:
+            ai_response = await account_call
+            product_codes, product_ok = {}, True
         raw_content: str = ai_response.get("content", "")
         logger.debug("LLM raw_response for doc=%s: %s", document_id, raw_content)
 
         assignments, parse_warnings = self._parse_response(raw_content, details, candidate_index)
         warnings.extend(parse_warnings)
+
+        # Una línea reconocida como producto sustituye a su cuenta: el payload de SIIGO lleva
+        # una sola identificación por ítem. Las demás conservan la cuenta.
+        if product_codes:
+            assignments = [a for a in assignments if a["detail_id"] not in product_codes]
+            assignments.extend(
+                {"detail_id": detail_id, "code": code, "type": "Product"}
+                for detail_id, code in sorted(product_codes.items())
+            )
+        # Si la pregunta de productos falló, no se evaluó nada: no se concluye que el tercero
+        # no vende productos.
+        detection_ran = product_plan.ran and product_ok
 
         # Las líneas protegidas cuentan como omitidas: no se enviaron al modelo, pero el
         # total reportado debe cuadrar con las líneas reales del documento.
@@ -290,10 +371,122 @@ class AssignAccountCodesUseCase:
                 ],
             }
 
-        updated = await self._document_client.patch_detail_codes(document_id, assignments)
+        updated = await self._document_client.patch_detail_codes(
+            document_id, assignments, product_detection_ran=detection_ran
+        )
 
         skipped = len(details) - updated + protected_count
         return {"assigned": updated, "skipped": skipped, "warnings": warnings}
+
+    async def _plan_products(self, details: list[dict], issuer: Optional[dict]) -> _ProductPlan:
+        """Decide si se buscan productos y, si sí, qué candidatos tiene cada línea.
+
+        Sin información del tercero (`issuer is None`: no se pudo consultar) no se busca nada:
+        podría estar forzado a cuenta y el modelo no debe ignorar esa regla por una caída. El
+        xml-processor la hace cumplir además por su lado, pero esto evita el trabajo.
+        """
+        if issuer is None:
+            return _ProductPlan()
+        mode = issuer.get("item_assignment_mode")
+        if mode == "account":
+            return _ProductPlan()
+
+        catalogo = await self._integration_config_client.get_products()
+        if catalogo is None:
+            return _ProductPlan()
+        if not debe_buscar_productos(mode, catalogo):
+            # Catálogo consultado y vacío: la detección «corrió» y concluyó que no hay nada.
+            return _ProductPlan(ran=True)
+
+        history = issuer.get("product_history") or []
+        candidates = {}
+        for d in details:
+            found = candidatos_por_linea(d.get("description"), catalogo, history)
+            if found and d.get("id") is not None:
+                candidates[d["id"]] = found
+        return _ProductPlan(ran=True, candidates=candidates)
+
+    async def _assign_products(
+        self, document: dict, details: list[dict], candidates_by_line: dict
+    ) -> tuple[dict, list[str], bool]:
+        """Pregunta al modelo cuáles líneas son un producto del catálogo.
+
+        Retorna `(códigos por detail_id, advertencias, ok)`. Solo se aceptan códigos que estén
+        entre los candidatos de esa línea (`resolver_producto`). `ok=False` si la llamada o la
+        respuesta fallaron: la asignación de cuentas sigue adelante sin productos.
+        """
+        by_id = {d["id"]: d for d in details}
+        items = [
+            {
+                "item_id": detail_id,
+                "descripcion": by_id[detail_id].get("description", ""),
+                "cantidad": by_id[detail_id].get("quantity"),
+                "unidad": by_id[detail_id].get("unit"),
+                "valor_unitario": by_id[detail_id].get("price"),
+                "candidatos": [
+                    {"codigo": c["code"], "descripcion": c["description"]} for c in candidates
+                ],
+            }
+            for detail_id, candidates in candidates_by_line.items()
+            if detail_id in by_id
+        ]
+        prompt = json.dumps(
+            {
+                "documento": {
+                    "emisor_razon_social": document.get("issuer_name"),
+                    "emisor_nit": document.get("issuer_nit"),
+                },
+                "items": items,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        try:
+            response = await self._ai.complete(prompt=prompt, system_prompt=_PRODUCT_SYSTEM_PROMPT)
+            parsed = self._load_json(response.get("content", ""))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("No se pudo evaluar productos para doc=%s: %s", document.get("id"), exc)
+            return (
+                {},
+                ["No fue posible evaluar si las líneas son productos; se asignaron por cuenta."],
+                False,
+            )
+        if parsed is None:
+            return {}, ["El LLM no retornó JSON válido al evaluar productos."], False
+
+        chosen: dict = {}
+        for item in parsed.get("items") or []:
+            try:
+                detail_id = int(item.get("item_id"))
+            except (TypeError, ValueError):
+                continue
+            if detail_id not in candidates_by_line:
+                continue
+            code = resolver_producto(item.get("product_code"), candidates_by_line[detail_id])
+            if code is not None:
+                chosen[detail_id] = code
+            elif item.get("product_code"):
+                logger.warning(
+                    "Producto %r descartado para la línea %s: no es uno de sus candidatos",
+                    item.get("product_code"),
+                    detail_id,
+                )
+        return chosen, [], True
+
+    @staticmethod
+    def _load_json(raw: str) -> Optional[dict]:
+        """JSON de la respuesta, tolerando el envoltorio markdown que algunos modelos añaden."""
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", raw or "", re.DOTALL)
+            if not match:
+                return None
+            try:
+                parsed = json.loads(match.group())
+            except json.JSONDecodeError:
+                return None
+        return parsed if isinstance(parsed, dict) else None
 
     def _resolve_system_prompt(self) -> str:
         """Prompt activo de la empresa, o el de fábrica si no hay ninguno configurado."""

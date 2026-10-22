@@ -54,10 +54,7 @@ def list_products(
     type: Optional[str] = Query(None, description="Filtrar por tipo: 'product' o 'service'."),
     repository: ProductRepository = Depends(get_product_repository),
 ) -> list[ProductResponse]:
-    products = repository.list(active=active)
-    if type is not None:
-        products = [p for p in products if p.type == type.strip().lower()]
-    return products
+    return repository.list(active=active, type=type)
 
 
 @router.post(

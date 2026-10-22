@@ -127,6 +127,25 @@ def test_medio_de_pago_inexistente_o_inactivo_es_422(client):
     assert client.patch(RUTA.format("900000001"), json={"payment_id": 2}).status_code == 422
 
 
+def test_modo_de_asignacion_se_define_y_se_deja_sin_definir(client):
+    _autenticar()
+    r = client.patch(RUTA.format("900000001"), json={"item_assignment_mode": "product"})
+    assert r.status_code == 200
+    assert r.json()["item_assignment_mode"] == "product"
+    r = client.patch(RUTA.format("900000001"), json={"item_assignment_mode": "account"})
+    assert r.json()["item_assignment_mode"] == "account"
+    # `null` lo devuelve a «sin definir»: el sistema volverá a decidirlo con la próxima factura.
+    r = client.patch(RUTA.format("900000001"), json={"item_assignment_mode": None})
+    assert r.status_code == 200
+    assert r.json()["item_assignment_mode"] is None
+
+
+def test_modo_de_asignacion_rechaza_valores_desconocidos(client):
+    _autenticar()
+    r = client.patch(RUTA.format("900000001"), json={"item_assignment_mode": "inventario"})
+    assert r.status_code == 422
+
+
 def test_nombre_o_correo_de_otro_emisor_es_409(client):
     _autenticar()
     assert client.patch(RUTA.format("900000001"), json={"name": "Beta SAS"}).status_code == 409

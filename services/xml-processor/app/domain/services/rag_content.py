@@ -129,18 +129,19 @@ def build_accounted_knowledge_content(
     # recibió SIIGO, con la cuenta ya definitiva. La descripción se conserva porque es el
     # texto por el que un documento posterior se parecerá a este.
     items = list(payload.get("items") or [])
-    lines.append("Imputación contable (concepto → cuenta):")
+    lines.append("Imputación contable (concepto → cuenta o producto):")
     if items:
         for item in items:
             lines.append(
-                f"  - {item.get('description', '')} | cuenta: {item.get('code', 'sin asignar')} "
+                f"  - {item.get('description', '')} | "
+                f"{_rotulo(item.get('type'))}: {item.get('code', 'sin asignar')} "
                 f"| cant: {item.get('quantity', '')} | precio: {item.get('price', '')}"
             )
     else:
         for item in document.details:
             lines.append(
-                f"  - {item.description} | cuenta: {item.code or 'sin asignar'} | "
-                f"cant: {item.quantity} | precio: {item.price}"
+                f"  - {item.description} | {_rotulo(getattr(item, 'type', None))}: "
+                f"{item.code or 'sin asignar'} | cant: {item.quantity} | precio: {item.price}"
             )
 
     tax_list = [t for t in taxes if float(getattr(t, "value", 0) or 0) != 0]
@@ -159,14 +160,16 @@ def build_accounted_knowledge_content(
         lines.append("Retenciones practicadas: ninguna.")
 
     # Rasgos con los que emparejar documentos posteriores parecidos.
-    cuentas = sorted(
-        {(i.get("code") or "") for i in items} or {(d.code or "") for d in document.details}
+    cuentas, productos = _codigos_por_tipo(items, document)
+    productos_rasgo = f"productos {', '.join(productos)}; " if productos else ""
+    retenciones_rasgo = (
+        f"retenciones {', '.join(names.get(t.tax_id, str(t.tax_id)) for t in tax_list) or 'ninguna'}."
     )
     lines.append(
         "Rasgos para identificar documentos similares: "
         f"proveedor {document.issuer_name} (NIT {document.issuer_nit}); "
-        f"cuentas {', '.join(c for c in cuentas if c) or 'sin asignar'}; "
-        f"retenciones {', '.join(names.get(t.tax_id, str(t.tax_id)) for t in tax_list) or 'ninguna'}."
+        f"cuentas {', '.join(cuentas) or 'sin asignar'}; "
+        f"{productos_rasgo}{retenciones_rasgo}"
     )
     return "\n".join(lines)
 
@@ -208,14 +211,16 @@ def build_accounted_knowledge_signature(
 
     items = list(payload.get("items") or [])
     conceptos = (
-        [(i.get("description") or "", i.get("code") or "") for i in items]
+        [(i.get("description") or "", i.get("code") or "", i.get("type")) for i in items]
         if items
-        else [(d.description or "", d.code or "") for d in document.details]
+        else [(d.description or "", d.code or "", getattr(d, "type", None)) for d in document.details]
     )
     if conceptos:
         partes.append(
             "Conceptos: "
-            + "; ".join(f"{desc} → cuenta {code or 'sin asignar'}" for desc, code in conceptos)
+            + "; ".join(
+                f"{desc} → {_rotulo(tipo)} {code or 'sin asignar'}" for desc, code, tipo in conceptos
+            )
         )
 
     tax_list = [t for t in taxes if float(getattr(t, "value", 0) or 0) != 0]
@@ -264,11 +269,13 @@ def build_accounted_knowledge_metadata(
     tax_list = [t for t in taxes if float(getattr(t, "value", 0) or 0) != 0]
 
     items = list(payload.get("items") or [])
+    # `account_codes` es solo de cuentas PUC: un código de producto ahí lo haría pasar por una
+    # cuenta ante cualquier filtro que compare contra el plan de cuentas. Los productos van en
+    # su propio rasgo.
+    cuentas, productos = _codigos_por_tipo(items, document)
     if items:
-        cuentas = [str(i.get("code") or "").strip() for i in items]
         conceptos = [str(i.get("description") or "").strip() for i in items]
     else:
-        cuentas = [str(d.code or "").strip() for d in document.details]
         conceptos = [str(d.description or "").strip() for d in document.details]
 
     metadata: dict[str, Any] = {
@@ -277,7 +284,8 @@ def build_accounted_knowledge_metadata(
         "issuer_nit": _clean_nit(document.issuer_nit),
         "issuer_name": str(document.issuer_name or "").strip(),
         "document_type": str(getattr(document, "document_type", "") or "").strip(),
-        "account_codes": sorted({c for c in cuentas if c}),
+        "account_codes": cuentas,
+        "product_codes": productos,
         "concepts": [c for c in conceptos if c][:20],
         # Tipos de retención practicados, normalizados. Permite preguntar «¿a este proveedor
         # se le ha practicado ReteICA alguna vez?» sin leer el texto de cada caso.
@@ -300,6 +308,26 @@ def build_accounted_knowledge_metadata(
     if municipality_code:
         metadata["municipality_code"] = str(municipality_code)
     return metadata
+
+
+def _rotulo(tipo) -> str:
+    """Cómo se llama el código de una línea en el texto: `producto` o `cuenta`."""
+    return "producto" if tipo == "Product" else "cuenta"
+
+
+def _codigos_por_tipo(items: list, document) -> tuple[list, list]:
+    """Códigos de las líneas separados en cuentas PUC y productos, sin repetir y ordenados.
+
+    Lee del payload enviado a SIIGO cuando lo hay (la imputación definitiva) y, si no, de las
+    líneas del documento.
+    """
+    if items:
+        pares = [(i.get("code"), i.get("type")) for i in items]
+    else:
+        pares = [(d.code, getattr(d, "type", None)) for d in document.details]
+    cuentas = {str(c).strip() for c, t in pares if c and t != "Product"}
+    productos = {str(c).strip() for c, t in pares if c and t == "Product"}
+    return sorted(cuentas), sorted(productos)
 
 
 def _clean_nit(nit) -> str:

@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
 
 from app.application.dto.document_tax import DocumentTaxResponse
 from app.infrastructure.config.accounting_settings import get_accounting_settings
@@ -405,11 +405,20 @@ class DocumentDetailCodeUpdateItem(BaseModel):
         ..., description="ID de la línea de detalle a actualizar.", examples=[42]
     )
     code: Optional[str] = Field(
-        None, description="Código PUC. Omitir para no modificar.", examples=["511500"]
+        None,
+        max_length=80,
+        description=(
+            "Código PUC (`type=Account`) o código del catálogo de productos (`type=Product`). "
+            "Omitir para no modificar."
+        ),
+        examples=["511500"],
     )
     type: Optional[str] = Field(
         None,
-        description="Tipo de ítem contable. Valores: Account, Product, FixedAsset. Omitir para no modificar.",
+        description=(
+            "Tipo de ítem contable. Valores: Account, Product, FixedAsset. Omitir para no "
+            "modificar; si se envía `code` sin `type`, la línea queda como Account."
+        ),
         examples=["Account"],
     )
     cost_center_id: Optional[int] = Field(
@@ -429,6 +438,31 @@ class DocumentDetailCodeUpdateItem(BaseModel):
             }
         }
     }
+
+    @field_validator("type")
+    @classmethod
+    def _tipo_conocido(cls, v):
+        if v is not None and v not in ("Account", "Product", "FixedAsset"):
+            raise ValueError("`type` debe ser Account, Product o FixedAsset.")
+        return v
+
+    @model_validator(mode="after")
+    def _tipo_exige_codigo(self):
+        # Cambiar solo el tipo dejaría la línea con el código del tipo anterior (un código PUC
+        # marcado Product, o al revés) y SIIGO la rechazaría. El tipo se valida contra el
+        # catálogo que le corresponde, y eso requiere el código en la misma petición.
+        if self.type is not None and "code" not in self.model_fields_set:
+            raise ValueError("Para cambiar `type` envíe también `code`.")
+        return self
+
+    @model_validator(mode="after")
+    def _codigo_sin_tipo_es_cuenta(self):
+        # Una línea que antes era Product y recibe una cuenta sin decir el tipo se quedaría
+        # con `type=Product` y un código PUC: SIIGO lo rechazaría. Asignar `type` aquí lo
+        # incluye en `model_fields_set`, así que el repositorio lo escribe.
+        if self.code is not None and "type" not in self.model_fields_set:
+            self.type = "Account"
+        return self
 
 
 class DocumentDetailCodeUpdateResponse(BaseModel):

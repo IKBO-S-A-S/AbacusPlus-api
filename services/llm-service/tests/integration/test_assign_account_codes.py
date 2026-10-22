@@ -36,7 +36,11 @@ class _FakeDocumentClient:
     async def get_document_full(self, document_id):
         return {"id": document_id, "issuer_name": "PROVEEDOR SAS", "details": self._details}
 
-    async def patch_detail_codes(self, document_id, assignments):
+    async def get_issuer(self, nit):
+        # Sin datos del tercero la detección de productos no corre: el flujo es el de cuentas.
+        return None
+
+    async def patch_detail_codes(self, document_id, assignments, product_detection_ran=False):
         self.patched = assignments
         return len(assignments)
 
@@ -51,6 +55,9 @@ class _FakeIntegrationConfigClient:
 
     async def get_cost_centers(self):
         return self._cost_centers
+
+    async def get_products(self):
+        return None
 
 
 class _FakeAI:

@@ -30,6 +30,7 @@ import app.infrastructure.persistence.models.document  # noqa: E402,F401
 import app.infrastructure.persistence.models.document_tax  # noqa: E402,F401
 import app.infrastructure.persistence.models.integration_cost_center  # noqa: E402,F401
 import app.infrastructure.persistence.models.integration_payment_type  # noqa: E402,F401
+import app.infrastructure.persistence.models.integration_product  # noqa: E402,F401
 import app.infrastructure.persistence.models.integration_retention  # noqa: E402,F401
 import app.infrastructure.persistence.models.integration_tax  # noqa: E402,F401
 import app.infrastructure.persistence.models.issuer  # noqa: E402,F401

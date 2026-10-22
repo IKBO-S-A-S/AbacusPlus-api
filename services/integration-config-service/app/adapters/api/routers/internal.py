@@ -19,6 +19,7 @@ from app.infrastructure.persistence.repositories.chart_account_repository import
     ChartAccountRepository,
 )
 from app.infrastructure.persistence.repositories.cost_center_repository import CostCenterRepository
+from app.infrastructure.persistence.repositories.product_repository import ProductRepository
 from app.infrastructure.persistence.repositories.retention_criteria_repository import (
     RetentionCriteriaRepository,
 )
@@ -226,6 +227,32 @@ def get_retentions_internal(
     db = get_session_for_tenant(x_tenant_slug)
     try:
         return RetentionRepository(db).list(active=active, type=type)
+    finally:
+        db.close()
+
+
+@router.get(
+    "/internal/products",
+    include_in_schema=False,
+    dependencies=[Depends(_verify_internal_secret)],
+)
+def get_products_internal(
+    x_tenant_slug: str = Header(...),
+    active: Optional[bool] = None,
+    type: Optional[str] = None,
+) -> list[dict]:
+    """Catálogo de productos para el llm-service (servicio-a-servicio).
+
+    Ver `/internal/chart-accounts`. Devuelve solo `code`, `description` y `type`: el
+    `raw_payload` de SIIGO puede ser grande y el modelo no lo necesita para casar un ítem con
+    un producto. Con `type=product` quedan fuera los servicios, que se causan por cuenta.
+    """
+    db = get_session_for_tenant(x_tenant_slug)
+    try:
+        return [
+            {"code": p.code, "description": p.description, "type": p.type}
+            for p in ProductRepository(db).list(active=active, type=type)
+        ]
     finally:
         db.close()
 

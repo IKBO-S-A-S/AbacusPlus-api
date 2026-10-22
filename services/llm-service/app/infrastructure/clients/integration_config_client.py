@@ -13,6 +13,7 @@ _INTERNAL_PATHS = {
     "/api/v1/integrations/cost-centers": "/internal/cost-centers",
     "/api/v1/integrations/taxes": "/internal/taxes",
     "/api/v1/integrations/retentions": "/internal/retentions",
+    "/api/v1/integrations/products": "/internal/products",
     "/api/v1/integrations/fiscal-profile": "/internal/fiscal-profile",
     "/api/v1/integrations/retention-criteria": "/internal/retention-criteria",
 }
@@ -131,6 +132,37 @@ class IntegrationConfigClient:
                 return []
 
         return await catalog_cache.get_or_load(self._tenant_slug, "retentions", _cargar)
+
+    async def get_products(self) -> Optional[list[dict]]:
+        """Productos activos del catálogo (los servicios quedan fuera: se causan por cuenta).
+
+        A diferencia del resto de catálogos, distingue **dos** estados que `[]` confundiría:
+
+        - lista vacía: la consulta funcionó y el cliente no tiene productos cargados;
+        - `None`: no se pudo consultar.
+
+        La diferencia es de fondo. Con catálogo vacío el tercero queda causado por cuenta; con
+        el servicio caído, no se sabe nada, y fijarle «por cuenta» a un tercero por una caída
+        de red lo dejaría sin productos para siempre. Quien llama usa el `None` para no
+        concluir nada.
+
+        Cacheado por empresa. Un resultado vacío o fallido no se cachea (ver `catalog_cache`).
+        """
+        falló = False
+
+        async def _cargar() -> list[dict]:
+            nonlocal falló
+            try:
+                return await self._get_json(
+                    "/api/v1/integrations/products", params={"active": "true", "type": "product"}
+                )
+            except Exception as exc:
+                falló = True
+                logger.warning("No se pudo obtener el catálogo de productos: %s", exc)
+                return []
+
+        productos = await catalog_cache.get_or_load(self._tenant_slug, "products", _cargar)
+        return None if falló else productos
 
     async def get_fiscal_profile(self) -> Optional[dict]:
         """Perfil fiscal del tenant (el COMPRADOR): define si la empresa es agente de retención.

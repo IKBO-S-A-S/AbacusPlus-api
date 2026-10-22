@@ -53,8 +53,10 @@ class ProductRepository:
             self.db.rollback()
             raise
 
-    def list(self, active: Optional[bool] = None) -> list[Product]:
+    def list(self, active: Optional[bool] = None, type: Optional[str] = None) -> list[Product]:
         query = self.db.query(Product)
         if active is not None:
             query = query.filter(Product.active.is_(active))
+        if type is not None:
+            query = query.filter(Product.type == type.strip().lower())
         return query.order_by(Product.code.asc()).all()

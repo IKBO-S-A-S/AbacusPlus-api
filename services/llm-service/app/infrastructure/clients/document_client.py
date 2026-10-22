@@ -87,8 +87,14 @@ class DocumentClient:
             return None
         return response.json()
 
-    async def patch_detail_codes(self, document_id: int, assignments: list[dict]) -> int:
+    async def patch_detail_codes(
+        self, document_id: int, assignments: list[dict], product_detection_ran: bool = False
+    ) -> int:
         """PATCH /internal/documents/{id}/details — actualiza code y type en líneas de detalle.
+
+        `product_detection_ran` avisa al xml-processor de que se evaluaron productos de verdad
+        (catálogo consultado sin error). Solo entonces puede fijar el modo de asignación de un
+        tercero sin definir; sin el aviso, no concluye nada.
 
         Retorna cantidad de filas actualizadas. Best-effort: retorna 0 en fallo.
         """
@@ -97,6 +103,7 @@ class DocumentClient:
             response = await client.patch(
                 f"{self._base_url}/internal/documents/{document_id}/details",
                 json=assignments,
+                params={"product_detection_ran": "true"} if product_detection_ran else None,
                 headers=self._headers,
                 timeout=10.0,
             )

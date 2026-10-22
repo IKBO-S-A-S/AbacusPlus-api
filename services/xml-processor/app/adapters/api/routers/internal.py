@@ -25,7 +25,8 @@ from app.application.dto.document_tax import (
     DocumentTaxCreateRequest,
     DocumentTaxSuggestionResponse,
 )
-from app.domain.services.account_assignment import validate_assignments
+from app.domain.services.account_assignment import RejectedAssignment, validate_assignments
+from app.domain.services.item_assignment_mode import MODE_ACCOUNT, modo_a_fijar
 from app.domain.services.rag_content import (
     build_accounted_knowledge_content,
     build_accounted_knowledge_metadata,
@@ -34,6 +35,9 @@ from app.domain.services.rag_content import (
 from app.domain.value_objects.document_status import DocumentStatus
 from app.infrastructure.config.tenant_connection_manager import get_session_for_tenant
 from app.infrastructure.persistence.models.document import Document
+from app.infrastructure.persistence.repositories.accounting_job_repository import (
+    AccountingAuditRepository,
+)
 from app.infrastructure.persistence.repositories.cost_center_repository import (
     CostCenterRepository,
 )
@@ -42,6 +46,7 @@ from app.infrastructure.persistence.repositories.document_tax_repository import 
     DocumentTaxRepository,
 )
 from app.infrastructure.persistence.repositories.issuer_repository import IssuerRepository
+from app.infrastructure.persistence.repositories.product_repository import ProductRepository
 from app.infrastructure.persistence.repositories.puc_repository import PucRepository
 from app.infrastructure.persistence.repositories.retention_repository import RetentionRepository
 from app.infrastructure.persistence.repositories.tax_or_retention_repository import (
@@ -411,6 +416,10 @@ def get_issuer_internal(
     son los que determinan qué retenciones proceden sobre el tercero. `documents` almacena
     los datos del emisor desnormalizados y no incluye ese campo, de ahí esta consulta.
     Devuelve 404 si el emisor no está registrado; el llamador lo trata como sin contexto.
+
+    `item_assignment_mode` dice si sus líneas van por cuenta, por producto o sin definir, y
+    `product_history` los productos con que ya se contabilizaron facturas suyas: el
+    llm-service los prioriza como candidatos al asignar por producto.
     """
     issuer = IssuerRepository(db).get_by_nit(nit)
     if issuer is None:
@@ -420,6 +429,8 @@ def get_issuer_internal(
         "name": issuer.name,
         "tipo_contribuyente": issuer.tipo_contribuyente,
         "notes": issuer.notes,
+        "item_assignment_mode": issuer.item_assignment_mode,
+        "product_history": DocumentRepository(db).get_issuer_product_history(issuer.nit),
     }
 
 
@@ -477,6 +488,47 @@ def get_document_full_internal(
     return DocumentResponse.model_validate(doc, from_attributes=True)
 
 
+def _tercero_forzado_a_cuenta(db: Session, document) -> bool:
+    """True si el emisor del documento tiene `item_assignment_mode == "account"`."""
+    if not document.issuer_nit:
+        return False
+    issuer = IssuerRepository(db).get_by_nit(document.issuer_nit)
+    return issuer is not None and issuer.item_assignment_mode == MODE_ACCOUNT
+
+
+def _fijar_modo_del_tercero(db: Session, document, tipos: list, deteccion_corrio: bool) -> None:
+    """Guarda en el tercero cómo se asignan sus líneas, si todavía no estaba definido.
+
+    Best-effort: las líneas ya quedaron escritas y un fallo aquí no debe devolverlas al
+    llm-service como error. El cambio queda auditado en `document_field_changes`.
+    """
+    try:
+        issuer_repo = IssuerRepository(db)
+        issuer = issuer_repo.get_by_nit(document.issuer_nit) if document.issuer_nit else None
+        if issuer is None:
+            return
+        nuevo = modo_a_fijar(issuer.item_assignment_mode, tipos, deteccion_corrio)
+        if nuevo is None:
+            return
+        anterior = issuer.item_assignment_mode
+        issuer_repo.update(issuer, {"item_assignment_mode": nuevo})
+        AccountingAuditRepository(db).record_field_change(
+            document_id=document.id,
+            entity="issuer",
+            entity_id=issuer.id,
+            field="item_assignment_mode",
+            old_value=anterior,
+            new_value=nuevo,
+            changed_by="llm",
+            reason="item_assignment_mode_detected",
+        )
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        logger.exception(
+            "No se pudo fijar item_assignment_mode del tercero del documento %s", document.id
+        )
+
+
 @router.patch(
     "/internal/documents/{document_id}/details",
     include_in_schema=False,
@@ -485,15 +537,22 @@ def get_document_full_internal(
 def update_detail_codes_internal(
     document_id: int,
     assignments: list[DocumentDetailCodeUpdateItem],
+    product_detection_ran: bool = False,
     db: Session = Depends(_get_tenant_db_internal),
 ):
-    """Persiste las cuentas que el llm-service determinó para un documento.
+    """Persiste las cuentas y productos que el llm-service determinó para un documento.
 
     Aplica exactamente las mismas reglas de dominio que la ruta pública, más la exigencia
     de que la cuenta pueda recibir el ítem de una compra. Sin esta validación el modelo
     llegó a persistir cuentas inexistentes en el catálogo y de clases contablemente
     imposibles: la ruta pública validaba y ésta no, así que la interfaz impedía al contador
     lo que el modelo sí podía hacer.
+
+    Una línea `type=Product` se valida contra el catálogo de productos en lugar del PUC.
+
+    `product_detection_ran` lo envía el llm-service solo cuando llegó a evaluar productos
+    (consultó el catálogo sin error). Con eso, y si el tercero está sin definir, se fija su
+    `item_assignment_mode`: `product` si se asignó algún producto, `account` si no.
 
     Las asignaciones inválidas se descartan y el resto se guarda. Abortar el lote entero
     dejaría sin cuenta a líneas correctas por culpa de una que el modelo erró, y esta ruta
@@ -524,6 +583,16 @@ def update_detail_codes_internal(
             ),
         )
 
+    # Un tercero forzado a cuenta no recibe productos, venga lo que venga del llm-service: la
+    # regla la decide el servidor y no depende de que el otro servicio la haya aplicado (si no
+    # pudo consultar al tercero, por ejemplo, no sabía que estaba forzado).
+    forzado_a_cuenta = _tercero_forzado_a_cuenta(db, document)
+    if forzado_a_cuenta:
+        productos = [a for a in assignments if a.type == "Product"]
+        assignments = [a for a in assignments if a.type != "Product"]
+    else:
+        productos = []
+
     outcome = validate_assignments(
         assignments=assignments,
         own_detail_ids={d.id for d in document.details},
@@ -533,7 +602,19 @@ def update_detail_codes_internal(
         },
         valid_cost_center_ids={c.id for c in CostCenterRepository(db).get_active()},
         enforce_item_class=True,
+        product_index=ProductRepository(db).index_by_code(),
     )
+    for a in productos:
+        outcome.rejected.append(
+            RejectedAssignment(
+                detail_id=a.detail_id,
+                code=a.code,
+                reason=(
+                    f"El producto '{a.code}' se descartó: el tercero está configurado para "
+                    "asignarse siempre por cuenta."
+                ),
+            )
+        )
 
     for rejection in outcome.rejected:
         logger.warning(
@@ -548,6 +629,12 @@ def update_detail_codes_internal(
     # llegan por aquí quedan marcadas como sugeridas por el modelo.
     updated = repo.update_detail_codes(
         [a.model_dump(exclude_unset=True) for a in outcome.accepted], code_source="llm"
+    )
+    _fijar_modo_del_tercero(
+        db,
+        document,
+        tipos=[a.type for a in outcome.accepted if a.code is not None],
+        deteccion_corrio=product_detection_ran,
     )
     return DocumentDetailCodeUpdateResponse(
         updated=updated, rejected=[r.reason for r in outcome.rejected]

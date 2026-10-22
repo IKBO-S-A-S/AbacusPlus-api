@@ -593,6 +593,37 @@ class DocumentRepository(DocumentRepositoryPort):
             return None
         return Counter(por_documento.values()).most_common(1)[0][0]
 
+    def get_issuer_product_history(self, issuer_nit: str, limit: int = 50) -> list[dict]:
+        """Productos con que ya se contabilizaron facturas del emisor (el historial confiable).
+
+        Solo documentos `CONTABILIZADA`: lo que SIIGO aceptó. Cada elemento trae el código,
+        cuántas líneas lo usaron y hasta tres descripciones distintas con que apareció, que
+        es lo que permite casar «tornillo 1/4» de hoy con el producto de la factura anterior.
+        Ordenado de más a menos usado.
+        """
+        rows = (
+            self.db.query(DocumentDetail.code, DocumentDetail.description)
+            .join(Document, DocumentDetail.document_id == Document.id)
+            .filter(
+                Document.issuer_nit == issuer_nit,
+                Document.status == DocumentStatus.CONTABILIZADA,
+                DocumentDetail.type == "Product",
+                DocumentDetail.code.isnot(None),
+            )
+            .all()
+        )
+        uses: Counter = Counter()
+        descriptions: dict[str, list[str]] = {}
+        for code, description in rows:
+            uses[code] += 1
+            known = descriptions.setdefault(code, [])
+            if description and description not in known and len(known) < 3:
+                known.append(description)
+        return [
+            {"code": code, "uses": n, "descriptions": descriptions.get(code, [])}
+            for code, n in uses.most_common(limit)
+        ]
+
     def find_most_frequent_cost_center(
         self, issuer_nit: str, description: str
     ) -> Optional[int]:

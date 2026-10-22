@@ -292,7 +292,8 @@ class DocumentDetail(Base):
         """Alias de `inc_value`. Lo consume `Document.total_consumption_tax`."""
         return self.inc_value
 
-    code = Column(String(50), nullable=True)
+    # Cuenta PUC (type="Account") o código de producto del catálogo (type="Product", hasta 80).
+    code = Column(String(80), nullable=True)
     type = Column(String(20), nullable=False, default="Account")
     tax_id = Column(Integer, nullable=True)
     cost_center_id = Column(Integer, nullable=True)
@@ -303,7 +304,7 @@ class DocumentDetail(Base):
     # `code_suggested` conserva la última propuesta del modelo incluso después de que el
     # contador la sobrescriba, para poder mostrarla y detectar el cambio manual.
     code_source = Column(String(10), nullable=True)
-    code_suggested = Column(String(50), nullable=True)
+    code_suggested = Column(String(80), nullable=True)
 
     # Relación con Document
     document = relationship("Document", back_populates="details")

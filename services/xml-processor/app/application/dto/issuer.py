@@ -1,6 +1,6 @@
 import re
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -27,6 +27,15 @@ class IssuerResponse(BaseModel):
     )
     notes: Optional[str] = Field(
         None, description="Reglas contables específicas del proveedor para el LLM."
+    )
+    item_assignment_mode: Optional[Literal["account", "product"]] = Field(
+        None,
+        description=(
+            "Cómo se asignan las líneas de sus facturas: `account` (siempre por cuenta PUC), "
+            "`product` (por producto del catálogo; la línea que no case va por cuenta) o `null` "
+            "(sin definir)."
+        ),
+        examples=["product"],
     )
     created_at: Optional[datetime] = Field(None, description="Fecha de creación del registro.")
 
@@ -85,6 +94,20 @@ class IssuerUpdateRequest(BaseModel):
             "los ya cargados conservan el suyo (se cambia por `PATCH /documents/{id}/payment-type`)."
         ),
         examples=[3],
+    )
+    item_assignment_mode: Optional[Literal["account", "product"]] = Field(
+        None,
+        description=(
+            "Cómo se asignan las líneas de las facturas de este tercero.\n"
+            "- `account`: siempre por cuenta PUC. Se ignora la detección de productos.\n"
+            "- `product`: cada línea se busca en el catálogo de productos; la que no case, o "
+            "no sea un producto, va por cuenta, así que un documento puede mezclar ambos.\n"
+            "- `null`: sin definir. Con la primera factura el sistema intenta detectar "
+            "productos: si asigna alguno queda en `product`; si no hay catálogo o ninguna "
+            "línea casa, queda en `account`.\n"
+            "Solo afecta a las asignaciones que se calculen después."
+        ),
+        examples=["product"],
     )
     notes: Optional[str] = Field(
         None,

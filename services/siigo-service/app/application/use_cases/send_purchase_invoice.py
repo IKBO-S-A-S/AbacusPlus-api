@@ -185,8 +185,8 @@ class SendPurchaseInvoiceUseCase:
                 )
             if not (item.code or "").strip():
                 faltantes.append(
-                    f"La línea {idx} no tiene cuenta contable asignada. "
-                    "Asigne la cuenta PUC antes de contabilizar."
+                    f"La línea {idx} no tiene cuenta contable ni producto asignado. "
+                    "Asigne la cuenta PUC o el producto antes de contabilizar."
                 )
             if item.quantity <= 0:
                 faltantes.append(f"La línea {idx} tiene una cantidad inválida ({item.quantity}).")

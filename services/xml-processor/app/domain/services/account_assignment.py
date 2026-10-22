@@ -27,6 +27,10 @@ ITEM_ACCOUNT_CLASSES = frozenset({"5", "6", "7"})
 # por cobrar.
 ITEM_ASSET_GROUPS = frozenset({"14", "15", "16", "17", "18"})
 
+#: `type` de una línea cuyo `code` es un producto del catálogo y no una cuenta PUC.
+TYPE_PRODUCT = "Product"
+TYPE_ACCOUNT = "Account"
+
 
 @dataclass(frozen=True)
 class RejectedAssignment:
@@ -62,6 +66,7 @@ def validate_assignments(
     puc_index: dict,
     valid_cost_center_ids: set,
     enforce_item_class: bool = False,
+    product_index: Optional[dict] = None,
 ) -> ValidationOutcome:
     """Filtra las asignaciones admisibles y explica cada descarte.
 
@@ -69,6 +74,8 @@ def validate_assignments(
       la operación al documento en curso y descarta cualquier `detail_id` ajeno.
     - `puc_index`: catálogo del tenant indexado por código. Cada entrada debe traer
       `is_active` y `accepts_movements`.
+    - `product_index`: catálogo de productos indexado por código (cada entrada con
+      `is_active`). Solo se consulta para las asignaciones con `type="Product"`.
     - `enforce_item_class`: exige además que la cuenta sea imputable a un ítem de compra.
       Se activa para las sugerencias del modelo; la edición manual no lo aplica porque el
       contador puede tener un caso legítimo que las reglas generales no contemplan.
@@ -94,9 +101,35 @@ def validate_assignments(
             )
             continue
 
+        # Una línea de producto no lleva cuenta PUC sino el código del catálogo de productos:
+        # se valida contra ese catálogo y se omiten las reglas de clase PUC, que no le aplican.
+        # A diferencia del PUC, un catálogo vacío NO desactiva la comprobación: sin catálogo no
+        # hay forma de saber que el código es un producto y no un texto cualquiera.
+        is_product = code is not None and _get(assignment, "type") == TYPE_PRODUCT
+        if is_product:
+            product = (product_index or {}).get(code)
+            if product is None:
+                rejected.append(
+                    RejectedAssignment(
+                        detail_id=detail_id,
+                        code=code,
+                        reason=f"El producto '{code}' no existe en el catálogo de productos.",
+                    )
+                )
+                continue
+            if not product.get("is_active", True):
+                rejected.append(
+                    RejectedAssignment(
+                        detail_id=detail_id,
+                        code=code,
+                        reason=f"El producto '{code}' está inactivo en el catálogo.",
+                    )
+                )
+                continue
+
         # `code` ausente o nulo es legítimo: significa «no tocar la cuenta» o «limpiarla».
         # Solo se valida cuando trae valor.
-        if code is not None and puc_index:
+        if code is not None and puc_index and not is_product:
             account = puc_index.get(code)
             if account is None:
                 rejected.append(

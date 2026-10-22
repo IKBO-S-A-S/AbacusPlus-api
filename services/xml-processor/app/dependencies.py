@@ -63,6 +63,7 @@ from app.infrastructure.persistence.repositories.issuer_repository import Issuer
 from app.infrastructure.persistence.repositories.processing_log_repository import (
     ProcessingLogRepository,
 )
+from app.infrastructure.persistence.repositories.product_repository import ProductRepository
 from app.infrastructure.persistence.repositories.puc_repository import PucRepository
 from app.infrastructure.persistence.repositories.receiver_repository import ReceiverRepository
 from app.infrastructure.persistence.repositories.retention_repository import RetentionRepository
@@ -170,6 +171,10 @@ def get_cost_center_repo(db: Session = Depends(get_tenant_db)) -> CostCenterRepo
 
 def get_puc_repo(db: Session = Depends(get_tenant_db)) -> PucRepository:
     return PucRepository(db)
+
+
+def get_product_repo(db: Session = Depends(get_tenant_db)) -> ProductRepository:
+    return ProductRepository(db)
 
 
 def get_retention_repo(db: Session = Depends(get_tenant_db)) -> RetentionRepository:

@@ -434,6 +434,33 @@ TENANT_MIGRATIONS: tuple[str, ...] = (
     _ampliar_varchar("receivers", "email", 255),
     _ampliar_varchar("receivers", "phone", 100),
     _ampliar_varchar("documents", "receiver_responsibilities", 255),
+    # `issuers.payment_id` y `issuers.notes` solo existían en el modelo: una base creada antes
+    # de ellas fallaba al leer el tercero con «columna inexistente», porque `create_all` no
+    # agrega columnas a tablas que ya existen.
+    "ALTER TABLE issuers ADD COLUMN IF NOT EXISTS payment_id INTEGER "
+    "REFERENCES integration_payment_types(id)",
+    "ALTER TABLE issuers ADD COLUMN IF NOT EXISTS notes VARCHAR(500)",
+    # Cómo se asignan las líneas de las facturas de este tercero: 'account' (siempre por cuenta
+    # PUC), 'product' (por código de producto del catálogo, con cuenta de respaldo en las líneas
+    # que no casen) o NULL (sin definir: el sistema lo decide con la primera factura).
+    "ALTER TABLE issuers ADD COLUMN IF NOT EXISTS item_assignment_mode VARCHAR(10)",
+    """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'ck_issuers_item_assignment_mode'
+        ) THEN
+            ALTER TABLE issuers
+                ADD CONSTRAINT ck_issuers_item_assignment_mode
+                CHECK (item_assignment_mode IS NULL
+                       OR item_assignment_mode IN ('account', 'product'));
+        END IF;
+    END $$;
+    """,
+    # Los códigos de producto del catálogo (`integration_products.code`) llegan a 80
+    # caracteres; la cuenta PUC cabía en 50.
+    _ampliar_varchar("document_details", "code", 80),
+    _ampliar_varchar("document_details", "code_suggested", 80),
 )
 
 

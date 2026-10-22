@@ -573,8 +573,9 @@ class AccountDocumentUseCase:
 
         if sin_cuenta:
             raise ValueError(
-                "Las siguientes líneas no tienen cuenta contable asignada: "
-                f"{', '.join(sin_cuenta)}. Asigne la cuenta PUC antes de contabilizar."
+                "Las siguientes líneas no tienen cuenta contable ni producto asignado: "
+                f"{', '.join(sin_cuenta)}. Asigne la cuenta PUC o el producto antes de "
+                "contabilizar."
             )
 
         payment_id = doc.payment_type_id or parameters.get("default_payment_id")

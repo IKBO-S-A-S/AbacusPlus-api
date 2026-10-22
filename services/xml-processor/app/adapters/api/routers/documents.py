@@ -65,6 +65,7 @@ from app.dependencies import (
     get_document_detail_use_case,
     get_document_repo,
     get_documents_by_date_range_use_case,
+    get_product_repo,
     get_puc_repo,
     get_reconcile_document_use_case,
     get_unapprove_document_use_case,
@@ -80,6 +81,7 @@ from app.infrastructure.persistence.repositories.accounting_job_repository impor
 from app.infrastructure.persistence.repositories.concept_repository import ConceptRepository
 from app.infrastructure.persistence.repositories.cost_center_repository import CostCenterRepository
 from app.infrastructure.persistence.repositories.document_repository import DocumentRepository
+from app.infrastructure.persistence.repositories.product_repository import ProductRepository
 from app.infrastructure.persistence.repositories.puc_repository import PucRepository
 
 logger = logging.getLogger(__name__)
@@ -361,11 +363,14 @@ def approve_document(
     dependencies=[Depends(require_write)],
     response_model=DocumentDetailCodeUpdateResponse,
     status_code=status.HTTP_200_OK,
-    summary="Asignar cuentas PUC a líneas de detalle",
+    summary="Asignar cuentas PUC o productos a líneas de detalle",
     description=(
         "Actualiza los campos `code` y `type` en las líneas de detalle de un documento.\n\n"
-        "Llamado por el llm-service al finalizar la asignación de cuentas PUC. "
-        "También puede invocarse manualmente para corregir asignaciones.\n\n"
+        "- `type=Account` (por defecto si se envía `code` sin `type`): `code` es una cuenta "
+        "PUC activa del catálogo.\n"
+        "- `type=Product`: `code` es un producto activo del catálogo de productos "
+        "(`/integrations/products`). Un documento puede mezclar líneas de ambos tipos.\n\n"
+        "Es la vía de corrección manual de asignaciones; el llm-service usa la ruta interna.\n\n"
         "Solo se actualizan las líneas cuyos `detail_id` existan en `document_details`. "
         "Los IDs inexistentes se ignoran sin error."
     ),
@@ -381,6 +386,7 @@ async def update_detail_codes(
     doc_repo: DocumentRepository = Depends(get_document_repo),
     puc_repo: PucRepository = Depends(get_puc_repo),
     cost_center_repo: CostCenterRepository = Depends(get_cost_center_repo),
+    product_repo: ProductRepository = Depends(get_product_repo),
     audit: AccountingAuditRepository = Depends(get_accounting_audit_repo),
 ):
     doc = doc_repo.get_by_id(document_id)
@@ -406,6 +412,7 @@ async def update_detail_codes(
             for p in puc_repo.get_active()
         },
         valid_cost_center_ids={c.id for c in cost_center_repo.get_active()},
+        product_index=product_repo.index_by_code(),
     )
 
     # Un descarte por línea ajena se ignora en silencio —no debe revelar si ese id existe—,
