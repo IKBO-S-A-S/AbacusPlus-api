@@ -471,7 +471,8 @@ class DocumentDetailCodeUpdateResponse(BaseModel):
         default_factory=list,
         description=(
             "Motivos de las asignaciones descartadas por no cumplir las reglas contables "
-            "(cuenta inexistente, inactiva, agrupadora o de clase inválida). La ruta pública "
+            "(cuenta o producto inexistente, inactivo, agrupadora o de clase inválida; "
+            "producto para un tercero configurado por cuenta). La ruta pública "
             "responde 422 ante el primer motivo, así que este campo solo se llena en la "
             "ruta interna que consume el llm-service."
         ),

@@ -56,14 +56,23 @@ def list_issuers(
         "- `payment_id` debe ser un medio de pago existente y activo. Solo afecta a los "
         "documentos procesados después; los ya cargados conservan el suyo.\n"
         "- `notes` alimenta la sugerencia de retenciones del LLM: ver la descripción del campo "
-        "para saber qué se lee y con qué límites.\n\n"
+        "para saber qué se lee y con qué límites.\n"
+        "- `item_assignment_mode` define cómo se asignan las líneas de sus facturas: `account` "
+        "(siempre por cuenta PUC), `product` (por producto del catálogo; la línea que no case "
+        "va por cuenta) o `null` (sin definir: con la primera factura el sistema lo decide). "
+        "Solo afecta a las asignaciones que se calculen después.\n\n"
         "Requiere rol con permiso de escritura (`tenant_admin` u `operator`)."
     ),
     response_description="Emisor con todas sus columnas ya actualizadas.",
     responses={
         404: {"description": "No hay emisor con ese NIT."},
         409: {"description": "Otro emisor ya usa ese `name` o `email`."},
-        422: {"description": "Datos inválidos, o `payment_id` inexistente o inactivo."},
+        422: {
+            "description": (
+                "Datos inválidos, `payment_id` inexistente o inactivo, o "
+                "`item_assignment_mode` distinto de `account`, `product` o `null`."
+            )
+        },
     },
 )
 def update_issuer(

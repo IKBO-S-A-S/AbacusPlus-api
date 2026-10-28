@@ -377,6 +377,13 @@ def approve_document(
     response_description="Cantidad de líneas actualizadas correctamente.",
     responses={
         404: {"description": "Documento no encontrado."},
+        409: {"description": "El documento no admite edición en su estado actual."},
+        422: {
+            "description": (
+                "Cuenta o producto inexistente, inactivo o no imputable; centro de costo "
+                "inexistente; o `type` enviado sin `code`."
+            )
+        },
     },
 )
 async def update_detail_codes(
